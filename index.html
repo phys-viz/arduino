@@ -449,20 +449,23 @@ async function expectInSyncOk(reader, stepName) {
 }
 
 async function resetIntoBootloader(port) {
-  // Pulses DTR to trigger the auto-reset circuit most Uno/Nano boards
+  // Pulses DTR/RTS to trigger the auto-reset circuit most Uno/Nano boards
   // have (a capacitor between the USB chip's DTR line and the reset pin).
+  // Clone boards (CH340-based, etc.) are often pickier about timing than
+  // genuine Arduino-brand boards, so these delays are intentionally
+  // generous — matching what avrdude itself uses (250ms low).
   await port.setSignals({ dataTerminalReady: false, requestToSend: false });
-  await sleep(120);
+  await sleep(250);
   await port.setSignals({ dataTerminalReady: true, requestToSend: true });
-  await sleep(80);
+  await sleep(150);
 }
 
 async function syncWithBootloader(writer, reader) {
   let lastErr = null;
-  for (let attempt = 0; attempt < 25; attempt++) {
+  for (let attempt = 0; attempt < 40; attempt++) {
     try {
       await writeBytes(writer, [STK.GET_SYNC, STK.CRC_EOP]);
-      const resp = await reader.readBytes(2, 300);
+      const resp = await reader.readBytes(2, 250);
       if (resp[0] === STK.INSYNC && resp[1] === STK.OK) return;
       lastErr = new Error(`Unexpected sync response (${resp[0]}, ${resp[1]})`);
     } catch (err) {
