@@ -475,6 +475,10 @@ async function resetIntoBootloader(port) {
   await sleep(150);
 }
 
+function toHex(bytes) {
+  return Array.from(bytes).map((b) => "0x" + b.toString(16).padStart(2, "0")).join(" ");
+}
+
 async function syncWithBootloader(writer, reader) {
   let lastErr = null;
   for (let attempt = 0; attempt < 40; attempt++) {
@@ -482,8 +486,10 @@ async function syncWithBootloader(writer, reader) {
       await writeBytes(writer, [STK.GET_SYNC, STK.CRC_EOP]);
       const resp = await reader.readBytes(2, 250);
       if (resp[0] === STK.INSYNC && resp[1] === STK.OK) return;
+      log(`  attempt ${attempt + 1}: got ${toHex(resp)} (expected 0x14 0x10)`, "muted");
       lastErr = new Error(`Unexpected sync response (${resp[0]}, ${resp[1]})`);
     } catch (err) {
+      log(`  attempt ${attempt + 1}: ${err.message}`, "muted");
       lastErr = err;
       reader.buffer = new Uint8Array(0); // drop any partial garbage and retry
     }
