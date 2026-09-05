@@ -435,12 +435,17 @@ class SerialReader {
       this.pumpError = err;
     }
   }
-  async readBytes(n, timeoutMs = 1500) {
+    async readBytes(n, timeoutMs = 1500) {
     const deadline = Date.now() + timeoutMs;
     while (this.buffer.length < n) {
       if (this.pumpError) throw this.pumpError;
       if (this.closed) throw new Error("Serial port closed unexpectedly.");
-      if (Date.now() >= deadline) throw new Error("Timed out waiting for a response from the board.");
+      if (Date.now() >= deadline) {
+        const partial = this.buffer.length
+          ? ` (${this.buffer.length} byte(s) sitting in the buffer: ${toHex(this.buffer)})`
+          : " (0 bytes received — total silence)";
+        throw new Error("Timed out waiting for a response from the board." + partial);
+      }
       await sleep(15);
     }
     const out = this.buffer.slice(0, n);
