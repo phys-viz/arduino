@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sketchbench — Arduino Uploader</title>
+<style>
+  :root {
+    --board-green: #0f3d2e;
+    --board-green-dark: #0a2b20;
+    --pad-copper: #c9922f;
+    --pad-copper-bright: #e0ac4a;
+    --trace: #1c5940;
+    --paper: #f2ede0;
+    --ink: #1b1b16;
+    --ink-soft: #5b5b4f;
+    --console-bg: #0c0f0d;
+    --console-text: #d7e9dc;
+    --ok: #6fcf97;
+    --warn: #e0ac4a;
+    --err: #e0705f;
+    --radius: 3px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+
+  header {
+    background: var(--board-green);
+    color: var(--paper);
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    flex-wrap: wrap;
+    border-bottom: 4px solid var(--pad-copper);
+    background-image:
+      radial-gradient(circle at 12px 12px, var(--pad-copper) 1.5px, transparent 1.6px),
+      radial-gradient(circle at 12px 12px, var(--pad-copper) 1.5px, transparent 1.6px);
+    background-size: 28px 28px;
+    background-position: 0 0, 14px 14px;
+    background-repeat: repeat-x;
+    background-color: var(--board-green);
+  }
+
+  header h1 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: 0.2px;
+    white-space: nowrap;
+  }
+
+  header .spacer { flex: 1; }
+
+  select, button {
+    font-family: inherit;
+    font-size: 14px;
+    border-radius: var(--radius);
+    border: 1px solid transparent;
+    padding: 8px 14px;
+    cursor: pointer;
+  }
+
+  select {
+    background: var(--board-green-dark);
+    color: var(--paper);
+    border: 1px solid var(--trace);
+  }
+
+  button {
+    background: var(--pad-copper);
+    color: #241a08;
+    font-weight: 600;
+    transition: background 0.12s ease;
+  }
+  button:hover:not(:disabled) { background: var(--pad-copper-bright); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  button.secondary {
+    background: transparent;
+    color: var(--paper);
+    border: 1px solid var(--pad-copper);
+  }
+  button.secondary:hover:not(:disabled) { background: rgba(201, 146, 47, 0.18); }
+
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 20px;
+    gap: 14px;
+    max-width: 980px;
+    width: 100%;
+    margin: 0 auto;
+  }
+
+  .editor-shell {
+    border: 1px solid #d8d0bb;
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: #14171a;
+    display: flex;
+    min-height: 360px;
+    flex: 1;
+  }
+
+  .line-numbers {
+    background: #0f1214;
+    color: #5c665e;
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: 14px;
+    line-height: 21px;
+    padding: 12px 10px;
+    text-align: right;
+    user-select: none;
+    overflow: hidden;
+    white-space: pre;
+  }
+
+  textarea#code {
+    flex: 1;
+    resize: none;
+    border: none;
+    outline: none;
+    background: #14171a;
+    color: #e7ede9;
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: 14px;
+    line-height: 21px;
+    padding: 12px 14px;
+    tab-size: 2;
+    white-space: pre;
+    overflow: auto;
+  }
+
+  .toolbar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .toolbar .status-chip {
+    font-size: 13px;
+    color: var(--ink-soft);
+    padding: 6px 10px;
+    border: 1px solid #d8d0bb;
+    border-radius: var(--radius);
+    background: #fff;
+  }
+  .toolbar .status-chip.connected { color: #14663f; border-color: #a9d7bf; background: #eaf7ef; }
+
+  #console {
+    background: var(--console-bg);
+    color: var(--console-text);
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: 12.5px;
+    line-height: 1.55;
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    height: 190px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    border: 1px solid #23281f;
+  }
+  #console .ok { color: var(--ok); }
+  #console .warn { color: var(--warn); }
+  #console .err { color: var(--err); }
+  #console .muted { color: #6d766f; }
+
+  footer {
+    text-align: center;
+    color: var(--ink-soft);
+    font-size: 12px;
+    padding: 10px 0 18px;
+  }
+
+  @media (max-width: 640px) {
+    header { padding: 12px 14px; }
+    main { padding: 14px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚡ Sketchbench</h1>
+  <select id="board">
+    <option value="uno">Arduino Uno</option>
+    <option value="nano_new">Arduino Nano (newer bootloader)</option>
+    <option value="nano_old">Arduino Nano (older bootloader)</option>
+  </select>
+  <div class="spacer"></div>
+  <button id="connectBtn" class="secondary">Connect board</button>
+</header>
+
+<main>
+  <div class="editor-shell">
+    <div class="line-numbers" id="lineNumbers">1</div>
+    <textarea id="code" spellcheck="false"></textarea>
+  </div>
+
+  <div class="toolbar">
+    <button id="compileBtn">Compile</button>
+    <button id="uploadBtn" disabled>Upload to board</button>
+    <span class="status-chip" id="connChip">No board connected</span>
+    <span class="status-chip" id="hexChip">Not compiled yet</span>
+  </div>
+
+  <div id="console"><span class="muted">Ready. Write a sketch, then Compile, then Connect + Upload.</span></div>
+</main>
+
+<footer>Sketchbench — a classroom Arduino uploader</footer>
+
+<script>
+// ---------------------------------------------------------------------
+// Point this at wherever the compile server (server/server.js) is running.
+// For a classroom LAN this might be your teacher laptop's IP address;
+// for a hosted setup it'll be a real URL. This is the ONLY line most
+// deployments need to change.
+// ---------------------------------------------------------------------
+const COMPILE_SERVER_URL = "http://localhost:3131";
+
+const BOARD_BAUD = {
+  uno: 115200,
+  nano_new: 115200,
+  nano_old: 57600,
+};
+
+const DEFAULT_SKETCH = `void setup() {
+  pinMode(LED_BUILTIN, OUTPUT);
+}
+
+void loop() {
+  digitalWrite(LED_BUILTIN, HIGH);
+  delay(500);
+  digitalWrite(LED_BUILTIN, LOW);
+  delay(500);
+}
+`;
+
+// ---------- Editor ----------
+const codeEl = document.getElementById("code");
+const lineNumbersEl = document.getElementById("lineNumbers");
+
+function refreshLineNumbers() {
+  const lines = codeEl.value.split("\n").length;
+  let out = "";
+  for (let i = 1; i <= lines; i++) out += i + "\n";
+  lineNumbersEl.textContent = out;
+}
+codeEl.addEventListener("input", () => {
+  refreshLineNumbers();
+  localStorage.setItem("sketchbench_code", codeEl.value);
+});
+codeEl.addEventListener("scroll", () => {
+  lineNumbersEl.scrollTop = codeEl.scrollTop;
+});
+codeEl.addEventListener("keydown", (e) => {
+  if (e.key === "Tab") {
+    e.preventDefault();
+    const start = codeEl.selectionStart, end = codeEl.selectionEnd;
+    codeEl.value = codeEl.value.slice(0, start) + "  " + codeEl.value.slice(end);
+    codeEl.selectionStart = codeEl.selectionEnd = start + 2;
+    refreshLineNumbers();
+  }
+});
+
+codeEl.value = localStorage.getItem("sketchbench_code") || DEFAULT_SKETCH;
+refreshLineNumbers();
+
+const boardSelect = document.getElementById("board");
+boardSelect.value = localStorage.getItem("sketchbench_board") || "uno";
+boardSelect.addEventListener("change", () => {
+  localStorage.setItem("sketchbench_board", boardSelect.value);
+});
+
+// ---------- Console log ----------
+const consoleEl = document.getElementById("console");
+function log(msg, cls) {
+  const line = document.createElement("div");
+  if (cls) line.className = cls;
+  line.textContent = msg;
+  consoleEl.appendChild(line);
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+function clearLog() { consoleEl.innerHTML = ""; }
+
+// ---------- Compile ----------
+const compileBtn = document.getElementById("compileBtn");
+const uploadBtn = document.getElementById("uploadBtn");
+const hexChip = document.getElementById("hexChip");
+let compiledHexBytes = null; // Uint8Array of raw flash bytes, ready to write
+
+compileBtn.addEventListener("click", async () => {
+  clearLog();
+  compiledHexBytes = null;
+  uploadBtn.disabled = true;
+  hexChip.textContent = "Not compiled yet";
+  hexChip.classList.remove("connected");
+  compileBtn.disabled = true;
+  log("Sending sketch to compile server...", "muted");
+
+  try {
+    const res = await fetch(`${COMPILE_SERVER_URL}/compile`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: codeEl.value, board: boardSelect.value }),
+    });
+    const data = await res.json();
+
+    if (!data.success) {
+      log("Compile failed:", "err");
+      log(data.error || "(no details returned)", "err");
+      return;
+    }
+
+    const rawHex = atob(data.hex);
+    compiledHexBytes = parseIntelHex(rawHex);
+    log(`Compiled OK — ${compiledHexBytes.length} bytes of program.`, "ok");
+    hexChip.textContent = `Compiled: ${compiledHexBytes.length} bytes`;
+    hexChip.classList.add("connected");
+    uploadBtn.disabled = !serialPort;
+  } catch (err) {
+    log("Couldn't reach the compile server. Is it running, and is " + COMPILE_SERVER_URL + " reachable from this browser?", "err");
+    log(String(err), "err");
+  } finally {
+    compileBtn.disabled = false;
+  }
+});
+
+// Minimal Intel HEX parser — handles the record types avr-gcc actually
+// emits for Uno/Nano-class chips (data + end-of-file). Returns a flat
+// byte array representing flash contents starting at address 0.
+function parseIntelHex(hexText) {
+  const bytes = [];
+  const lines = hexText.split(/\r?\n/);
+  for (const line of lines) {
+    if (!line.startsWith(":")) continue;
+    const byteCount = parseInt(line.substr(1, 2), 16);
+    const address = parseInt(line.substr(3, 4), 16);
+    const recordType = parseInt(line.substr(7, 2), 16);
+    if (recordType === 0) {
+      for (let i = 0; i < byteCount; i++) {
+        const byteStr = line.substr(9 + i * 2, 2);
+        bytes[address + i] = parseInt(byteStr, 16);
+      }
+    }
+    // recordType 1 = end of file, others not expected for these boards.
+  }
+  // Fill any gaps (shouldn't normally happen) with 0xFF.
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] === undefined) bytes[i] = 0xff;
+  }
+  return new Uint8Array(bytes);
+}
+
+// ---------- WebSerial connect ----------
+const connectBtn = document.getElementById("connectBtn");
+const connChip = document.getElementById("connChip");
+let serialPort = null;
+
+if (!("serial" in navigator)) {
+  connectBtn.disabled = true;
+  connChip.textContent = "This browser doesn't support WebSerial — use Chrome or Edge.";
+}
+
+connectBtn.addEventListener("click", async () => {
+  try {
+    serialPort = await navigator.serial.requestPort();
+    connChip.textContent = "Board connected";
+    connChip.classList.add("connected");
+    uploadBtn.disabled = !compiledHexBytes;
+    log("Board selected. Ready to upload once compiled.", "ok");
+  } catch (err) {
+    log("No board was selected.", "warn");
+  }
+});
+
+// ---------- STK500v1 upload ----------
+const STK = {
+  GET_SYNC: 0x30,
+  OK: 0x10,
+  INSYNC: 0x14,
+  CRC_EOP: 0x20,
+  ENTER_PROGMODE: 0x50,
+  LEAVE_PROGMODE: 0x51,
+  LOAD_ADDRESS: 0x55,
+  PROG_PAGE: 0x64,
+  READ_SIGN: 0x75,
+};
+const PAGE_SIZE = 128; // bytes, correct for ATmega328P (Uno / Nano)
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+class SerialReader {
+  constructor(port) {
+    this.reader = port.readable.getReader();
+    this.buffer = new Uint8Array(0);
+  }
+  async readBytes(n, timeoutMs = 1500) {
+    const deadline = Date.now() + timeoutMs;
+    while (this.buffer.length < n) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error("Timed out waiting for a response from the board.");
+      const { value, done } = await Promise.race([
+        this.reader.read(),
+        sleep(remaining).then(() => ({ value: undefined, done: false, timedOut: true })),
+      ]);
+      if (done) throw new Error("Serial port closed unexpectedly.");
+      if (value === undefined) throw new Error("Timed out waiting for a response from the board.");
+      const merged = new Uint8Array(this.buffer.length + value.length);
+      merged.set(this.buffer);
+      merged.set(value, this.buffer.length);
+      this.buffer = merged;
+    }
+    const out = this.buffer.slice(0, n);
+    this.buffer = this.buffer.slice(n);
+    return out;
+  }
+  async release() {
+    try { await this.reader.cancel(); } catch (e) {}
+    this.reader.releaseLock();
+  }
+}
+
+async function writeBytes(writer, bytes) {
+  await writer.write(new Uint8Array(bytes));
+}
+
+async function expectInSyncOk(reader, stepName) {
+  const resp = await reader.readBytes(2);
+  if (resp[0] !== STK.INSYNC || resp[1] !== STK.OK) {
+    throw new Error(`Board didn't acknowledge "${stepName}" (got bytes ${resp[0]}, ${resp[1]}).`);
+  }
+}
+
+async function resetIntoBootloader(port) {
+  // Pulses DTR to trigger the auto-reset circuit most Uno/Nano boards
+  // have (a capacitor between the USB chip's DTR line and the reset pin).
+  await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+  await sleep(120);
+  await port.setSignals({ dataTerminalReady: true, requestToSend: true });
+  await sleep(80);
+}
+
+async function syncWithBootloader(writer, reader) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < 25; attempt++) {
+    try {
+      await writeBytes(writer, [STK.GET_SYNC, STK.CRC_EOP]);
+      const resp = await reader.readBytes(2, 300);
+      if (resp[0] === STK.INSYNC && resp[1] === STK.OK) return;
+      lastErr = new Error(`Unexpected sync response (${resp[0]}, ${resp[1]})`);
+    } catch (err) {
+      lastErr = err;
+      reader.buffer = new Uint8Array(0); // drop any partial garbage and retry
+    }
+  }
+  throw new Error(
+    "Couldn't sync with the bootloader. Try pressing the board's reset button right after clicking Upload, or double-check the board type selected."
+  );
+}
+
+uploadBtn.addEventListener("click", async () => {
+  if (!serialPort || !compiledHexBytes) return;
+  uploadBtn.disabled = true;
+  compileBtn.disabled = true;
+  connectBtn.disabled = true;
+
+  let writer, reader;
+  try {
+    const baud = BOARD_BAUD[boardSelect.value];
+    log(`Opening serial port at ${baud} baud...`, "muted");
+    await serialPort.open({ baudRate: baud });
+
+    writer = serialPort.writable.getWriter();
+    reader = new SerialReader(serialPort);
+
+    log("Resetting board into bootloader...", "muted");
+    await resetIntoBootloader(serialPort);
+
+    log("Syncing...", "muted");
+    await syncWithBootloader(writer, reader);
+    log("Synced.", "ok");
+
+    await writeBytes(writer, [STK.ENTER_PROGMODE, STK.CRC_EOP]);
+    await expectInSyncOk(reader, "enter program mode");
+
+    const total = compiledHexBytes.length;
+    const pageCount = Math.ceil(total / PAGE_SIZE);
+    log(`Writing ${pageCount} page(s) of flash memory...`, "muted");
+
+    for (let page = 0; page < pageCount; page++) {
+      const byteAddr = page * PAGE_SIZE;
+      const wordAddr = byteAddr / 2;
+
+      await writeBytes(writer, [STK.LOAD_ADDRESS, wordAddr & 0xff, (wordAddr >> 8) & 0xff, STK.CRC_EOP]);
+      await expectInSyncOk(reader, `load address (page ${page + 1})`);
+
+      let pageBytes = compiledHexBytes.slice(byteAddr, byteAddr + PAGE_SIZE);
+      if (pageBytes.length < PAGE_SIZE) {
+        const padded = new Uint8Array(PAGE_SIZE).fill(0xff);
+        padded.set(pageBytes);
+        pageBytes = padded;
+      }
+
+      const cmd = [STK.PROG_PAGE, (PAGE_SIZE >> 8) & 0xff, PAGE_SIZE & 0xff, "F".charCodeAt(0), ...pageBytes, STK.CRC_EOP];
+      await writeBytes(writer, cmd);
+      await expectInSyncOk(reader, `program page ${page + 1}`);
+
+      if (page % 4 === 0 || page === pageCount - 1) {
+        log(`  page ${page + 1} / ${pageCount}`, "muted");
+      }
+    }
+
+    await writeBytes(writer, [STK.LEAVE_PROGMODE, STK.CRC_EOP]);
+    await expectInSyncOk(reader, "leave program mode");
+
+    log("Upload complete. The board should be running your new sketch now.", "ok");
+  } catch (err) {
+    log("Upload failed: " + err.message, "err");
+  } finally {
+    try { if (reader) await reader.release(); } catch (e) {}
+    try { if (writer) writer.releaseLock(); } catch (e) {}
+    try { await serialPort.close(); } catch (e) {}
+    uploadBtn.disabled = !compiledHexBytes;
+    compileBtn.disabled = false;
+    connectBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
