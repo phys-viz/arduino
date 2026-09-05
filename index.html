@@ -449,14 +449,13 @@ async function expectInSyncOk(reader, stepName) {
 }
 
 async function resetIntoBootloader(port) {
-  // Pulses DTR/RTS to trigger the auto-reset circuit most Uno/Nano boards
-  // have (a capacitor between the USB chip's DTR line and the reset pin).
-  // Clone boards (CH340-based, etc.) are often pickier about timing than
-  // genuine Arduino-brand boards, so these delays are intentionally
-  // generous — matching what avrdude itself uses (250ms low).
-  await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+  // Pulses DTR (only) to trigger the auto-reset circuit most Uno/Nano
+  // boards have (a capacitor between the USB chip's DTR line and the
+  // reset pin). Some clone boards' reset circuitry gets confused if RTS
+  // is toggled at the same time, so we leave RTS alone here.
+  await port.setSignals({ dataTerminalReady: false });
   await sleep(250);
-  await port.setSignals({ dataTerminalReady: true, requestToSend: true });
+  await port.setSignals({ dataTerminalReady: true });
   await sleep(150);
 }
 
