@@ -463,7 +463,7 @@
   </div>
 </div>
 
-<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.17</span></footer>
+<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.18</span></footer>
 
 <script>
 // ---------------------------------------------------------------------
@@ -492,7 +492,16 @@ if ("serial" in navigator) {
   const realRequestPort = navigator.serial.requestPort.bind(navigator.serial);
   navigator.serial.requestPort = async function (options) {
     const alreadyApproved = await navigator.serial.getPorts();
-    if (alreadyApproved.length > 0) return alreadyApproved[0];
+    // Only count entries that look like a real USB device (has a
+    // vendor ID) — some approved "ports" turn out to be unrelated
+    // non-USB serial endpoints with no useful identifying info, and
+    // blindly grabbing whichever was approved first can silently pick
+    // one of those instead of the actual board.
+    const usbOnly = alreadyApproved.filter((p) => {
+      const info = p.getInfo();
+      return info && info.usbVendorId !== undefined;
+    });
+    if (usbOnly.length === 1) return usbOnly[0];
     return realRequestPort(options);
   };
 }
@@ -558,7 +567,7 @@ function clearLog() { consoleEl.innerHTML = ""; }
 
 // Bump this string any time you save a change, so it's obvious whether
 // the browser is actually running your latest edit or a stale/cached copy.
-const SKETCHBENCH_VERSION = "v0.17";
+const SKETCHBENCH_VERSION = "v0.18";
 log(`Sketchbench ${SKETCHBENCH_VERSION} loaded.`, "muted");
 
 // ---------- Compile ----------
