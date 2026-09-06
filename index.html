@@ -238,27 +238,28 @@
     main { padding: 14px 14px 10px; }
   }
 
-  /* ---------- Serial Monitor overlay ---------- */
+  /* ---------- Serial Monitor: floating, draggable panel ---------- */
   .monitor-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(15, 20, 15, 0.55);
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    pointer-events: none; /* lets clicks reach the page behind it */
     z-index: 10;
-    padding: 24px;
   }
 
   .monitor-panel {
+    position: fixed;
+    top: 70px;
+    left: 50%;
+    transform: translateX(-50%);
+    pointer-events: auto;
     background: var(--console-bg);
     border: 1px solid #23281f;
     border-radius: var(--radius);
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
-    width: 100%;
-    max-width: 760px;
-    height: 100%;
-    max-height: 560px;
+    width: 720px;
+    max-width: calc(100vw - 40px);
+    height: 480px;
+    max-height: calc(100vh - 100px);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -273,8 +274,11 @@
     border-bottom: 1px solid #23281f;
     color: var(--console-text);
     flex-shrink: 0;
+    cursor: move;
+    user-select: none;
   }
   .monitor-header .spacer { flex: 1; }
+  .monitor-header select, .monitor-header button { cursor: pointer; }
   .monitor-header select {
     background: #1a1f1c;
     color: var(--console-text);
@@ -323,6 +327,47 @@
     outline: none;
   }
   .monitor-send-row input:disabled { opacity: 0.5; }
+
+  /* ---------- Help window ---------- */
+  .help-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 20, 15, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 11;
+    padding: 24px;
+  }
+  .help-panel {
+    background: var(--surface);
+    border-radius: var(--radius);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+    width: 100%;
+    max-width: 520px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .help-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    background: var(--board-green);
+    color: var(--paper);
+  }
+  .help-body {
+    padding: 16px 20px;
+    overflow-y: auto;
+    line-height: 1.55;
+    font-size: 14px;
+    color: var(--ink);
+  }
+  .help-body p { margin: 0 0 12px; }
+  .help-body p:last-child { margin-bottom: 0; }
 </style>
 </head>
 <body>
@@ -335,6 +380,7 @@
     <option value="nano_old">Arduino Nano (older bootloader)</option>
   </select>
   <div class="spacer"></div>
+  <button id="helpBtn" class="secondary" title="Help">?</button>
   <button id="connectBtn" class="secondary">Connect board</button>
 </header>
 
@@ -401,7 +447,23 @@
   </div>
 </div>
 
-<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.16</span></footer>
+<div id="helpOverlay" class="help-overlay" style="display:none">
+  <div class="help-panel">
+    <div class="help-header">
+      <strong>How Sketchbench works</strong>
+      <button id="helpCloseBtn" class="quiet">Close</button>
+    </div>
+    <div class="help-body">
+      <p><strong>1. Write your code</strong>, then click <strong>Compile</strong>. This turns it into a program the board can run — it doesn't touch the board yet.</p>
+      <p><strong>2. Click Upload.</strong> The first time you connect a board, Chrome will ask you to pick it from a list — after that, it's remembered and won't ask again.</p>
+      <p>If an upload fails partway through, that's usually just a momentary hiccup with the USB connection — <strong>click Upload again</strong> and it typically goes through.</p>
+      <p><strong>Serial Monitor</strong> shows whatever your sketch prints while it's running, and lets you type things back to it. It needs its own Connect step, and it can't be open at the same time as an Upload — only one thing can talk to the board at once.</p>
+      <p><strong>Save .ino / Load .ino</strong> let you save your code as a real file (to Drive, Downloads, wherever) or bring one back in later.</p>
+    </div>
+  </div>
+</div>
+
+<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.17</span></footer>
 
 <script>
 // ---------------------------------------------------------------------
@@ -417,6 +479,23 @@ const BOARD_BAUD = {
   nano_new: 115200,
   nano_old: 57600,
 };
+
+// Once a board has been picked once, reuse it silently instead of
+// showing the "select a device" popup every single time. Both our own
+// Serial Monitor code and the third-party upload library ultimately
+// call navigator.serial.requestPort() — this wraps that one shared
+// function, so the fix covers both automatically. The very first
+// connection of a session still shows the real picker (the browser
+// requires at least one explicit, human choice); every connection
+// after that, to the same board, is silent.
+if ("serial" in navigator) {
+  const realRequestPort = navigator.serial.requestPort.bind(navigator.serial);
+  navigator.serial.requestPort = async function (options) {
+    const alreadyApproved = await navigator.serial.getPorts();
+    if (alreadyApproved.length > 0) return alreadyApproved[0];
+    return realRequestPort(options);
+  };
+}
 
 const DEFAULT_SKETCH = `void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -479,7 +558,7 @@ function clearLog() { consoleEl.innerHTML = ""; }
 
 // Bump this string any time you save a change, so it's obvious whether
 // the browser is actually running your latest edit or a stale/cached copy.
-const SKETCHBENCH_VERSION = "v0.16";
+const SKETCHBENCH_VERSION = "v0.17";
 log(`Sketchbench ${SKETCHBENCH_VERSION} loaded.`, "muted");
 
 // ---------- Compile ----------
@@ -560,7 +639,7 @@ compileBtn.addEventListener("click", async () => {
   clearLog();
   compiledHexText = null;
   uploadBtn.disabled = true;
-  hexChip.textContent = "Not compiled yet";
+  hexChip.textContent = "Not compiled";
   hexChip.classList.remove("connected");
   compileBtn.disabled = true;
   log("Sending sketch to compile server...", "muted");
@@ -581,7 +660,7 @@ compileBtn.addEventListener("click", async () => {
 
     compiledHexText = atob(data.hex);
     log(`Compiled OK — ${compiledHexText.length} characters of program data.`, "ok");
-    hexChip.textContent = "Compiled — ready to upload";
+    hexChip.textContent = "Compiled";
     hexChip.classList.add("connected");
     uploadBtn.disabled = false;
   } catch (err) {
@@ -626,7 +705,7 @@ if (!("serial" in navigator)) {
   connectBtn.disabled = true;
   connChip.textContent = "This browser doesn't support WebSerial — use Chrome or Edge.";
 } else {
-  connChip.textContent = "Click Upload to pick your board";
+  connChip.textContent = "Board not yet selected";
 }
 connectBtn.style.display = "none"; // the library below handles board selection itself, at upload time
 
@@ -830,12 +909,47 @@ document.getElementById("monitorSaveBtn").addEventListener("click", async () => 
 });
 
 document.getElementById("monitorToggleBtn").addEventListener("click", () => {
-  monitorOverlay.style.display = "flex";
+  monitorOverlay.style.display = "block";
 });
 
 document.getElementById("monitorCloseBtn").addEventListener("click", async () => {
   if (monitorPort) await stopMonitor();
   monitorOverlay.style.display = "none";
+});
+
+// Dragging: click-and-hold the panel's header (but not its buttons or
+// the baud dropdown) to move it anywhere on screen.
+const monitorPanelEl = document.querySelector(".monitor-panel");
+const monitorHeaderEl = document.querySelector(".monitor-header");
+let dragState = null;
+
+monitorHeaderEl.addEventListener("pointerdown", (e) => {
+  if (e.target.closest("button, select")) return; // let those work normally
+  const rect = monitorPanelEl.getBoundingClientRect();
+  dragState = { startX: e.clientX, startY: e.clientY, origLeft: rect.left, origTop: rect.top };
+  monitorPanelEl.style.transform = "none";
+  monitorPanelEl.style.left = rect.left + "px";
+  monitorPanelEl.style.top = rect.top + "px";
+  monitorHeaderEl.setPointerCapture(e.pointerId);
+});
+monitorHeaderEl.addEventListener("pointermove", (e) => {
+  if (!dragState) return;
+  const dx = e.clientX - dragState.startX;
+  const dy = e.clientY - dragState.startY;
+  const newLeft = Math.max(-monitorPanelEl.offsetWidth + 100, Math.min(dragState.origLeft + dx, window.innerWidth - 100));
+  const newTop = Math.max(0, Math.min(dragState.origTop + dy, window.innerHeight - 40));
+  monitorPanelEl.style.left = newLeft + "px";
+  monitorPanelEl.style.top = newTop + "px";
+});
+monitorHeaderEl.addEventListener("pointerup", () => { dragState = null; });
+monitorHeaderEl.addEventListener("pointercancel", () => { dragState = null; });
+
+// ---------- Help window ----------
+document.getElementById("helpBtn").addEventListener("click", () => {
+  document.getElementById("helpOverlay").style.display = "flex";
+});
+document.getElementById("helpCloseBtn").addEventListener("click", () => {
+  document.getElementById("helpOverlay").style.display = "none";
 });
 </script>
 </body>
