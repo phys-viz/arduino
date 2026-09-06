@@ -243,7 +243,7 @@
   <div id="console"><span class="muted">Ready. Write a sketch, then Compile, then Connect + Upload.</span></div>
 </main>
 
-<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.8</span></footer>
+<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.9</span></footer>
 
 <script>
 // ---------------------------------------------------------------------
@@ -252,7 +252,8 @@
 // for a hosted setup it'll be a real URL. This is the ONLY line most
 // deployments need to change.
 // ---------------------------------------------------------------------
-const COMPILE_SERVER_URL = "https://gristle-bronco-saturate.ngrok-free.dev";  
+const COMPILE_SERVER_URL = "http://localhost:3131";
+
 const BOARD_BAUD = {
   uno: 115200,
   nano_new: 115200,
@@ -320,7 +321,7 @@ function clearLog() { consoleEl.innerHTML = ""; }
 
 // Bump this string any time you save a change, so it's obvious whether
 // the browser is actually running your latest edit or a stale/cached copy.
-const SKETCHBENCH_VERSION = "v0.8";
+const SKETCHBENCH_VERSION = "v0.9";
 log(`Sketchbench ${SKETCHBENCH_VERSION} loaded.`, "muted");
 
 // ---------- Compile ----------
@@ -414,20 +415,42 @@ const LIBRARY_BOARD_NAMES = {
 const realUploaderBtn = document.getElementById("realUploaderBtn");
 const progressSpan = realUploaderBtn.querySelector(".upload-progress");
 
-// Mirror the library's own progress text into our console, so the
-// person watches one place instead of two.
+// Mirror the library's own progress text into our console, and
+// automatically retry a few times on failure. This board's connection
+// is a little electrically marginal — most individual steps succeed,
+// but any single one can randomly time out. Their library only retries
+// the very first step automatically, so a hiccup on any later step
+// otherwise ends the whole attempt. Retrying the whole sequence a
+// couple of times gives it another chance to get a clean run.
 let lastProgressText = "";
+let retryCount = 0;
+const MAX_RETRIES = 4;
+
 new MutationObserver(() => {
   const text = progressSpan.textContent.trim();
   if (text && text !== lastProgressText) {
     lastProgressText = text;
     log("  " + text, "muted");
+
+    if (text.startsWith("Error") && retryCount < MAX_RETRIES) {
+      retryCount++;
+      log(`  Hiccup on this attempt — retrying (${retryCount}/${MAX_RETRIES})...`, "warn");
+      setTimeout(() => realUploaderBtn.click(), 1200);
+    } else if (text.startsWith("Error")) {
+      log("Upload kept failing after several attempts. Try unplugging and replugging the board, then Upload again.", "err");
+      uploadBtn.disabled = !compiledHexText;
+    } else if (text === "100%" || text.toLowerCase().includes("done")) {
+      log("Upload complete. The board should be running your new sketch now.", "ok");
+      uploadBtn.disabled = !compiledHexText;
+    }
   }
 }).observe(progressSpan, { childList: true, characterData: true, subtree: true });
 
 uploadBtn.addEventListener("click", () => {
   if (!compiledHexText) return;
 
+  retryCount = 0;
+  lastProgressText = "";
   const boardName = LIBRARY_BOARD_NAMES[boardSelect.value];
   const blob = new Blob([compiledHexText], { type: "text/plain" });
   const hexUrl = URL.createObjectURL(blob);
@@ -439,13 +462,6 @@ uploadBtn.addEventListener("click", () => {
   log(`  (sending hex-href=${hexUrl}, board=${boardName})`, "muted");
   uploadBtn.disabled = true;
   realUploaderBtn.click();
-
-  // The library doesn't give us a promise to await, so we just re-enable
-  // the button after a generous delay — clicking again if still mid-upload
-  // simply reopens the picker, it doesn't corrupt anything in progress.
-  setTimeout(() => {
-    uploadBtn.disabled = !compiledHexText;
-  }, 4000);
 });
 </script>
 </body>
