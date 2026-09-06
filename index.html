@@ -295,6 +295,38 @@
     color: #7a8378;
   }
 
+  .view-toggle {
+    display: flex;
+    border: 1px solid #2e3630;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+  .view-toggle button {
+    background: transparent;
+    color: #9aa69c;
+    border: none;
+    border-radius: 0;
+    padding: 6px 12px;
+    font-size: 12.5px;
+  }
+  .view-toggle button.view-toggle-active {
+    background: var(--pad-copper);
+    color: #241a08;
+    font-weight: 600;
+  }
+
+  .plot-container {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    background: #0d1210;
+  }
+  #plotCanvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
   .monitor-output {
     flex: 1;
     min-height: 0;
@@ -424,6 +456,10 @@
   <div class="monitor-panel">
     <div class="monitor-header">
       <strong>Serial Monitor</strong>
+      <div class="view-toggle">
+        <button id="viewTextBtn" class="view-toggle-active">Text</button>
+        <button id="viewPlotBtn">Plot</button>
+      </div>
       <select id="monitorBaud">
         <option value="9600" selected>9600 baud</option>
         <option value="115200">115200 baud</option>
@@ -437,9 +473,13 @@
       <button id="monitorConnectBtn" class="quiet">Connect</button>
       <button id="monitorClearBtn" class="quiet">Clear</button>
       <button id="monitorSaveBtn" class="quiet">Save log</button>
+      <button id="plotSaveCsvBtn" class="quiet">Save CSV</button>
       <button id="monitorCloseBtn" class="quiet">Close</button>
     </div>
     <div id="monitorOutput" class="monitor-output"></div>
+    <div id="plotContainer" class="plot-container" style="display:none">
+      <canvas id="plotCanvas"></canvas>
+    </div>
     <div class="monitor-send-row">
       <input type="text" id="monitorSendInput" placeholder="Type something to send to the board, then press Enter..." disabled />
       <button id="monitorSendBtn" disabled>Send</button>
@@ -463,7 +503,7 @@
   </div>
 </div>
 
-<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.18</span></footer>
+<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.19</span></footer>
 
 <script>
 // ---------------------------------------------------------------------
@@ -567,7 +607,7 @@ function clearLog() { consoleEl.innerHTML = ""; }
 
 // Bump this string any time you save a change, so it's obvious whether
 // the browser is actually running your latest edit or a stale/cached copy.
-const SKETCHBENCH_VERSION = "v0.18";
+const SKETCHBENCH_VERSION = "v0.19";
 log(`Sketchbench ${SKETCHBENCH_VERSION} loaded.`, "muted");
 
 // ---------- Compile ----------
@@ -848,7 +888,9 @@ async function startMonitor() {
       lineBuffer += decoder.decode(value, { stream: true });
       let idx;
       while ((idx = lineBuffer.indexOf("\n")) >= 0) {
-        appendMonitorLine(lineBuffer.slice(0, idx).replace(/\r$/, ""));
+        const completedLine = lineBuffer.slice(0, idx).replace(/\r$/, "");
+        appendMonitorLine(completedLine);
+        feedPlotter(completedLine);
         lineBuffer = lineBuffer.slice(idx + 1);
       }
     }
@@ -887,9 +929,188 @@ monitorSendInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") sendMonitorInput();
 });
 
+// ---------- Live Plotter ----------
+// Draws numeric data from the same serial stream as the Text view,
+// straight to a <canvas> — no charting library needed. Understands the
+// same line formats the real Arduino Plotter does: one number, several
+// numbers separated by spaces/commas/tabs (each becomes its own trace),
+// or "label:value" pairs to name a trace explicitly. Non-numeric lines
+// (plain debug prints) are simply skipped here, but still show up fine
+// in the Text view — the two views share one live feed.
+const PLOT_MAX_POINTS = 300;
+const PLOT_COLORS = ["#e0ac4a", "#6fcf97", "#7ab8e0", "#e0705f", "#c98fe0", "#e0e06f"];
+let plotSeries = new Map(); // name -> array of recent numbers
+let plotDirty = true;
+let monitorViewMode = "text";
+
+function feedPlotter(line) {
+  const tokens = line.split(/[,\t ]+/).map((s) => s.trim()).filter(Boolean);
+  let sawNumber = false;
+  tokens.forEach((token, i) => {
+    let name = `value ${i + 1}`;
+    let raw = token;
+    const colonIdx = token.indexOf(":");
+    if (colonIdx > 0) {
+      name = token.slice(0, colonIdx);
+      raw = token.slice(colonIdx + 1);
+    }
+    const num = parseFloat(raw);
+    if (!isNaN(num) && isFinite(num)) {
+      sawNumber = true;
+      if (!plotSeries.has(name)) plotSeries.set(name, []);
+      const arr = plotSeries.get(name);
+      arr.push(num);
+      if (arr.length > PLOT_MAX_POINTS) arr.shift();
+    }
+  });
+  if (sawNumber) plotDirty = true;
+}
+
+const plotCanvas = document.getElementById("plotCanvas");
+
+function resizePlotCanvasIfNeeded() {
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = plotCanvas.clientWidth;
+  const cssHeight = plotCanvas.clientHeight;
+  if (plotCanvas.width !== cssWidth * dpr || plotCanvas.height !== cssHeight * dpr) {
+    plotCanvas.width = cssWidth * dpr;
+    plotCanvas.height = cssHeight * dpr;
+  }
+}
+
+function drawPlot() {
+  requestAnimationFrame(drawPlot);
+  if (monitorViewMode !== "plot" || !plotDirty) return;
+  plotDirty = false;
+
+  resizePlotCanvasIfNeeded();
+  const ctx = plotCanvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const w = plotCanvas.clientWidth;
+  const h = plotCanvas.clientHeight;
+  ctx.clearRect(0, 0, w, h);
+
+  const names = Array.from(plotSeries.keys());
+  if (names.length === 0) {
+    ctx.fillStyle = "#5c665e";
+    ctx.font = "13px ui-monospace, monospace";
+    ctx.fillText("Waiting for numeric data from the board...", 14, 24);
+    return;
+  }
+
+  let minV = Infinity, maxV = -Infinity;
+  for (const arr of plotSeries.values()) {
+    for (const v of arr) {
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+    }
+  }
+  if (minV === maxV) { minV -= 1; maxV += 1; }
+  const pad = (maxV - minV) * 0.08;
+  minV -= pad;
+  maxV += pad;
+
+  const marginLeft = 48, marginRight = 14, marginTop = 14, marginBottom = 24;
+  const plotW = w - marginLeft - marginRight;
+  const plotH = h - marginTop - marginBottom;
+  const xFor = (i, len) => marginLeft + (len <= 1 ? 0 : (i / (len - 1)) * plotW);
+  const yFor = (v) => marginTop + plotH - ((v - minV) / (maxV - minV)) * plotH;
+
+  ctx.strokeStyle = "#23281f";
+  ctx.fillStyle = "#5c665e";
+  ctx.font = "11px ui-monospace, monospace";
+  ctx.lineWidth = 1;
+  for (let g = 0; g <= 4; g++) {
+    const v = minV + (g / 4) * (maxV - minV);
+    const y = yFor(v);
+    ctx.beginPath();
+    ctx.moveTo(marginLeft, y);
+    ctx.lineTo(w - marginRight, y);
+    ctx.stroke();
+    ctx.fillText(v.toFixed(1), 4, y + 3);
+  }
+
+  names.forEach((name, si) => {
+    const color = PLOT_COLORS[si % PLOT_COLORS.length];
+    const arr = plotSeries.get(name);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    arr.forEach((v, i) => {
+      const x = xFor(i, arr.length);
+      const y = yFor(v);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    const lx = marginLeft + si * 110;
+    const ly = h - 6;
+    ctx.fillStyle = color;
+    ctx.fillRect(lx, ly - 8, 10, 10);
+    ctx.fillStyle = "#d7e9dc";
+    ctx.fillText(name, lx + 14, ly);
+  });
+}
+requestAnimationFrame(drawPlot);
+
+document.getElementById("viewTextBtn").addEventListener("click", () => {
+  monitorViewMode = "text";
+  document.getElementById("viewTextBtn").classList.add("view-toggle-active");
+  document.getElementById("viewPlotBtn").classList.remove("view-toggle-active");
+  monitorOutput.style.display = "block";
+  document.getElementById("plotContainer").style.display = "none";
+});
+document.getElementById("viewPlotBtn").addEventListener("click", () => {
+  monitorViewMode = "plot";
+  document.getElementById("viewPlotBtn").classList.add("view-toggle-active");
+  document.getElementById("viewTextBtn").classList.remove("view-toggle-active");
+  monitorOutput.style.display = "none";
+  document.getElementById("plotContainer").style.display = "block";
+  plotDirty = true; // force an immediate redraw of whatever's already captured
+});
+
+document.getElementById("plotSaveCsvBtn").addEventListener("click", async () => {
+  const names = Array.from(plotSeries.keys());
+  if (names.length === 0) return;
+  const maxLen = Math.max(...names.map((n) => plotSeries.get(n).length));
+  let csv = "sample," + names.join(",") + "\n";
+  for (let i = 0; i < maxLen; i++) {
+    const row = [i];
+    for (const n of names) {
+      const arr = plotSeries.get(n);
+      row.push(arr[i] !== undefined ? arr[i] : "");
+    }
+    csv += row.join(",") + "\n";
+  }
+  if ("showSaveFilePicker" in window) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: "plot-data.csv",
+        types: [{ description: "CSV file", accept: { "text/csv": [".csv"] } }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(csv);
+      await writable.close();
+      return;
+    } catch (err) {
+      if (err.name === "AbortError") return;
+    }
+  }
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "plot-data.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
 document.getElementById("monitorClearBtn").addEventListener("click", () => {
   monitorLines = [];
   monitorOutput.innerHTML = "";
+  plotSeries = new Map();
+  plotDirty = true;
 });
 
 document.getElementById("monitorSaveBtn").addEventListener("click", async () => {
