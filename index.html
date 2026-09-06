@@ -532,6 +532,7 @@
       <button id="helpCloseBtn" class="quiet">Close</button>
     </div>
     <div class="help-body">
+      <p><strong>Zio Arduino</strong> is a browser-based tool for writing, compiling, and uploading code to an Arduino Uno or Nano — no software to install, no account needed. It also includes a Serial Monitor and live data plotter for watching what your board is doing while it runs.</p>
       <p><strong>1. Write your code</strong>, then click <strong>Compile</strong>. This turns it into a program the board can run — it doesn't touch the board yet.</p>
       <p><strong>2. Click Upload.</strong> The first time you connect a board, Chrome will ask you to pick it from a list — after that, it's remembered and won't ask again.</p>
       <p>If an upload fails, check the reported error and selected board/bootloader before retrying.</p>
@@ -542,7 +543,7 @@
   </div>
 </div>
 
-<footer>Zio Arduino — a classroom Arduino uploader · <span id="versionTag">v0.24</span></footer>
+<footer>Zio Arduino — a classroom Arduino uploader · <span id="versionTag">v0.25</span></footer>
 
 <script>
 // ---------------------------------------------------------------------
@@ -905,8 +906,8 @@ function clearLog() { consoleEl.innerHTML = ""; }
 
 // Bump this string any time you save a change, so it's obvious whether
 // the browser is actually running your latest edit or a stale/cached copy.
-const SKETCHBENCH_VERSION = "v0.24";
-log(`Sketchbench ${SKETCHBENCH_VERSION} loaded.`, "muted");
+const ZIO_VERSION = "v0.25";
+log(`Zio Arduino ${ZIO_VERSION} loaded.`, "muted");
 
 // ---------- Compile ----------
 const compileBtn = document.getElementById("compileBtn");
