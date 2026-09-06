@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Sketchbench — Arduino Uploader</title>
+<title>Zio Arduino</title>
 <!--
   This is a published, independently-maintained library (not ours) that
   already reliably talks to Uno/Nano-class boards over WebSerial. We use
@@ -170,13 +170,24 @@
     white-space: pre;
   }
 
-  textarea#code {
+  /* Syntax highlighting works by stacking two identical-looking layers:
+     a <pre> underneath showing colored code, and the real <textarea> on
+     top with its text made fully transparent (only the blinking cursor
+     stays visible). They must share the exact same font/size/line-height
+     /padding so the invisible typed text lines up perfectly with the
+     colored text glowing through beneath it. */
+  .code-stack {
+    position: relative;
     flex: 1;
-    resize: none;
+    min-width: 0;
+  }
+
+  .code-stack pre,
+  textarea#code {
+    position: absolute;
+    inset: 0;
+    margin: 0;
     border: none;
-    outline: none;
-    background: #14171a;
-    color: #e7ede9;
     font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
     font-size: 14px;
     line-height: 21px;
@@ -186,6 +197,28 @@
     overflow: auto;
   }
 
+  #highlightLayer {
+    background: #14171a;
+    color: #e7ede9;
+    pointer-events: none;
+  }
+
+  textarea#code {
+    resize: none;
+    outline: none;
+    background: transparent;
+    color: transparent;
+    caret-color: #e7ede9;
+  }
+  textarea#code::selection { background: rgba(224, 172, 74, 0.35); }
+
+  .tok-comment { color: #7a8a7e; font-style: italic; }
+  .tok-string { color: #e0ac4a; }
+  .tok-number { color: #7ab8e0; }
+  .tok-keyword { color: #c58fd9; }
+  .tok-builtin { color: #6fd9d9; }
+  .tok-preproc { color: #8a95a0; }
+
   .toolbar {
     display: flex;
     gap: 10px;
@@ -193,17 +226,6 @@
     flex-wrap: wrap;
     flex-shrink: 0;
   }
-
-  .toolbar .status-chip {
-    font-size: 12.5px;
-    font-weight: 500;
-    color: var(--ink-soft);
-    padding: 7px 13px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--surface);
-  }
-  .toolbar .status-chip.connected { color: #14663f; border-color: #a9d7bf; background: #eaf7ef; }
 
   #console {
     background: var(--console-bg);
@@ -405,7 +427,7 @@
 <body>
 
 <header>
-  <h1>⚡ Sketchbench</h1>
+  <h1>⚡ Zio Arduino</h1>
   <select id="board">
     <option value="uno">Arduino Uno</option>
     <option value="nano_new">Arduino Nano (newer bootloader)</option>
@@ -419,7 +441,10 @@
 <main>
   <div class="editor-shell">
     <div class="line-numbers" id="lineNumbers">1</div>
-    <textarea id="code" spellcheck="false"></textarea>
+    <div class="code-stack">
+      <pre id="highlightLayer" aria-hidden="true"><code></code></pre>
+      <textarea id="code" spellcheck="false"></textarea>
+    </div>
   </div>
 
   <div class="toolbar">
@@ -429,8 +454,6 @@
     <button id="loadBtn" class="quiet">Load .ino</button>
     <button id="monitorToggleBtn" class="quiet">Serial Monitor</button>
     <input type="file" id="loadFileInput" accept=".ino,.txt,text/plain" style="display:none" />
-    <span class="status-chip" id="connChip">No board connected</span>
-    <span class="status-chip" id="hexChip">Not compiled yet</span>
   </div>
 
   <!--
@@ -503,7 +526,7 @@
   </div>
 </div>
 
-<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.19</span></footer>
+<footer>Zio Arduino — a classroom Arduino uploader · <span id="versionTag">v0.20</span></footer>
 
 <script>
 // ---------------------------------------------------------------------
@@ -561,6 +584,8 @@ void loop() {
 // ---------- Editor ----------
 const codeEl = document.getElementById("code");
 const lineNumbersEl = document.getElementById("lineNumbers");
+const highlightLayerEl = document.getElementById("highlightLayer");
+const highlightCodeEl = highlightLayerEl.querySelector("code");
 
 function refreshLineNumbers() {
   const lines = codeEl.value.split("\n").length;
@@ -568,12 +593,71 @@ function refreshLineNumbers() {
   for (let i = 1; i <= lines; i++) out += i + "\n";
   lineNumbersEl.textContent = out;
 }
-codeEl.addEventListener("input", () => {
+
+// ---------- Syntax highlighting ----------
+// A small, dependency-free highlighter — no CDN, no bundler, just a
+// regex pass over the code. Comments and strings are matched first (as
+// whole chunks) so a keyword-looking word inside a comment or string
+// never gets colored as if it were real code.
+const CPP_KEYWORDS = new Set([
+  "void", "int", "float", "double", "char", "bool", "boolean", "byte", "long", "short",
+  "unsigned", "signed", "const", "static", "volatile", "if", "else", "for", "while", "do",
+  "switch", "case", "break", "continue", "return", "true", "false", "struct", "class",
+  "public", "private", "protected", "new", "delete", "sizeof", "typedef", "enum",
+  "namespace", "using", "this", "virtual", "null", "NULL", "nullptr", "String",
+]);
+const ARDUINO_BUILTINS = new Set([
+  "setup", "loop", "pinMode", "digitalWrite", "digitalRead", "analogRead", "analogWrite",
+  "delay", "delayMicroseconds", "millis", "micros", "Serial", "Wire", "SPI",
+  "HIGH", "LOW", "INPUT", "OUTPUT", "INPUT_PULLUP", "LED_BUILTIN",
+  "attachInterrupt", "detachInterrupt", "tone", "noTone", "map", "constrain",
+  "min", "max", "abs", "pow", "sqrt", "random", "randomSeed",
+  "begin", "print", "println", "available", "read", "write",
+]);
+const TOKEN_REGEX =
+  /(\/\/[^\n]*)|(\/\*[\s\S]*?\*\/)|("(?:[^"\\]|\\.)*")|('(?:[^'\\]|\\.)*')|(#\s*\w+)|(\b0[xX][0-9a-fA-F]+\b|\b\d+\.?\d*[fFuUlL]?\b)|(\b[A-Za-z_]\w*\b)/g;
+
+function escapeHtml(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function highlightSyntax(code) {
+  return escapeHtml(code).replace(
+    TOKEN_REGEX,
+    (match, lineComment, blockComment, dquote, squote, preproc, number, word) => {
+      if (lineComment || blockComment) return `<span class="tok-comment">${match}</span>`;
+      if (dquote || squote) return `<span class="tok-string">${match}</span>`;
+      if (preproc) return `<span class="tok-preproc">${match}</span>`;
+      if (number) return `<span class="tok-number">${match}</span>`;
+      if (word) {
+        if (CPP_KEYWORDS.has(word)) return `<span class="tok-keyword">${match}</span>`;
+        if (ARDUINO_BUILTINS.has(word)) return `<span class="tok-builtin">${match}</span>`;
+      }
+      return match;
+    }
+  );
+}
+
+function refreshHighlight() {
+  // A trailing newline keeps the last (possibly empty) line the same
+  // height in both layers, so the cursor and the colored text never
+  // drift apart by a fraction of a line.
+  highlightCodeEl.innerHTML = highlightSyntax(codeEl.value) + "\n";
+}
+
+function refreshEditorViews() {
   refreshLineNumbers();
+  refreshHighlight();
+}
+
+codeEl.addEventListener("input", () => {
+  refreshEditorViews();
   localStorage.setItem("sketchbench_code", codeEl.value);
 });
 codeEl.addEventListener("scroll", () => {
   lineNumbersEl.scrollTop = codeEl.scrollTop;
+  highlightLayerEl.scrollTop = codeEl.scrollTop;
+  highlightLayerEl.scrollLeft = codeEl.scrollLeft;
 });
 codeEl.addEventListener("keydown", (e) => {
   if (e.key === "Tab") {
@@ -581,12 +665,12 @@ codeEl.addEventListener("keydown", (e) => {
     const start = codeEl.selectionStart, end = codeEl.selectionEnd;
     codeEl.value = codeEl.value.slice(0, start) + "  " + codeEl.value.slice(end);
     codeEl.selectionStart = codeEl.selectionEnd = start + 2;
-    refreshLineNumbers();
+    refreshEditorViews();
   }
 });
 
 codeEl.value = localStorage.getItem("sketchbench_code") || DEFAULT_SKETCH;
-refreshLineNumbers();
+refreshEditorViews();
 
 const boardSelect = document.getElementById("board");
 boardSelect.value = localStorage.getItem("sketchbench_board") || "uno";
@@ -607,13 +691,12 @@ function clearLog() { consoleEl.innerHTML = ""; }
 
 // Bump this string any time you save a change, so it's obvious whether
 // the browser is actually running your latest edit or a stale/cached copy.
-const SKETCHBENCH_VERSION = "v0.19";
+const SKETCHBENCH_VERSION = "v0.20";
 log(`Sketchbench ${SKETCHBENCH_VERSION} loaded.`, "muted");
 
 // ---------- Compile ----------
 const compileBtn = document.getElementById("compileBtn");
 const uploadBtn = document.getElementById("uploadBtn");
-const hexChip = document.getElementById("hexChip");
 let compiledHexText = null; // raw Intel HEX text, exactly as the compiler produced it
 
 // ---------- Save .ino ----------
@@ -656,7 +739,7 @@ document.getElementById("saveBtn").addEventListener("click", async () => {
 // native-feeling dialog).
 function loadCodeIntoEditor(text) {
   codeEl.value = text;
-  refreshLineNumbers();
+  refreshEditorViews();
   localStorage.setItem("sketchbench_code", codeEl.value);
 }
 
@@ -688,8 +771,6 @@ compileBtn.addEventListener("click", async () => {
   clearLog();
   compiledHexText = null;
   uploadBtn.disabled = true;
-  hexChip.textContent = "Not compiled";
-  hexChip.classList.remove("connected");
   compileBtn.disabled = true;
   log("Sending sketch to compile server...", "muted");
 
@@ -709,8 +790,6 @@ compileBtn.addEventListener("click", async () => {
 
     compiledHexText = atob(data.hex);
     log(`Compiled OK — ${compiledHexText.length} characters of program data.`, "ok");
-    hexChip.textContent = "Compiled";
-    hexChip.classList.add("connected");
     uploadBtn.disabled = false;
   } catch (err) {
     log("Couldn't reach the compile server. Is it running, and is " + COMPILE_SERVER_URL + " reachable from this browser?", "err");
@@ -748,13 +827,10 @@ function parseIntelHex(hexText) {
 
 // ---------- WebSerial connect ----------
 const connectBtn = document.getElementById("connectBtn");
-const connChip = document.getElementById("connChip");
 
 if (!("serial" in navigator)) {
   connectBtn.disabled = true;
-  connChip.textContent = "This browser doesn't support WebSerial — use Chrome or Edge.";
-} else {
-  connChip.textContent = "Board not yet selected";
+  log("This browser doesn't support WebSerial — use Chrome or Edge for Upload and Serial Monitor.", "err");
 }
 connectBtn.style.display = "none"; // the library below handles board selection itself, at upload time
 
