@@ -252,8 +252,8 @@
 // for a hosted setup it'll be a real URL. This is the ONLY line most
 // deployments need to change.
 // ---------------------------------------------------------------------
-const COMPILE_SERVER_URL = "https://gristle-bronco-saturate.ngrok-free.dev";
-  
+const COMPILE_SERVER_URL = "http://localhost:3131";
+
 const BOARD_BAUD = {
   uno: 115200,
   nano_new: 115200,
@@ -321,7 +321,7 @@ function clearLog() { consoleEl.innerHTML = ""; }
 
 // Bump this string any time you save a change, so it's obvious whether
 // the browser is actually running your latest edit or a stale/cached copy.
-const SKETCHBENCH_VERSION = "v0.7";
+const SKETCHBENCH_VERSION = "v0.8";
 log(`Sketchbench ${SKETCHBENCH_VERSION} loaded.`, "muted");
 
 // ---------- Compile ----------
@@ -437,6 +437,7 @@ uploadBtn.addEventListener("click", () => {
   realUploaderBtn.setAttribute("board", boardName);
 
   log("Handing off to the board-selection popup — choose your board there...", "muted");
+  log(`  (sending hex-href=${hexUrl}, board=${boardName})`, "muted");
   uploadBtn.disabled = true;
   realUploaderBtn.click();
 
