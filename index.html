@@ -218,6 +218,11 @@
   .tok-keyword { color: #c58fd9; }
   .tok-builtin { color: #6fd9d9; }
   .tok-preproc { color: #8a95a0; }
+  .tok-bracket-match {
+    background: rgba(224, 172, 74, 0.32);
+    outline: 1px solid rgba(224, 172, 74, 0.65);
+    border-radius: 2px;
+  }
 
   .toolbar {
     display: flex;
@@ -526,7 +531,7 @@
   </div>
 </div>
 
-<footer>Zio Arduino — a classroom Arduino uploader · <span id="versionTag">v0.20</span></footer>
+<footer>Zio Arduino — a classroom Arduino uploader · <span id="versionTag">v0.21</span></footer>
 
 <script>
 // ---------------------------------------------------------------------
@@ -621,28 +626,123 @@ function escapeHtml(text) {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function highlightSyntax(code) {
-  return escapeHtml(code).replace(
-    TOKEN_REGEX,
-    (match, lineComment, blockComment, dquote, squote, preproc, number, word) => {
-      if (lineComment || blockComment) return `<span class="tok-comment">${match}</span>`;
-      if (dquote || squote) return `<span class="tok-string">${match}</span>`;
-      if (preproc) return `<span class="tok-preproc">${match}</span>`;
-      if (number) return `<span class="tok-number">${match}</span>`;
-      if (word) {
-        if (CPP_KEYWORDS.has(word)) return `<span class="tok-keyword">${match}</span>`;
-        if (ARDUINO_BUILTINS.has(word)) return `<span class="tok-builtin">${match}</span>`;
-      }
-      return match;
+// Breaks the raw code into a flat list of {text, type} chunks covering
+// every character (type is null for plain code — including bracket
+// punctuation, which none of the categories below capture on its own).
+// Concatenating every chunk's .text reproduces the original code
+// exactly, which is what lets renderHighlightedHtml() below splice in
+// bracket-match highlighting at exact character positions without
+// getting thrown off by HTML-escaping shifting the offsets around.
+function tokenize(code) {
+  const tokens = [];
+  let lastIndex = 0;
+  TOKEN_REGEX.lastIndex = 0;
+  let m;
+  while ((m = TOKEN_REGEX.exec(code)) !== null) {
+    if (m.index > lastIndex) tokens.push({ text: code.slice(lastIndex, m.index), type: null });
+    const [match, lineComment, blockComment, dquote, squote, preproc, number, word] = m;
+    let type = null;
+    if (lineComment || blockComment) type = "comment";
+    else if (dquote || squote) type = "string";
+    else if (preproc) type = "preproc";
+    else if (number) type = "number";
+    else if (word) {
+      if (CPP_KEYWORDS.has(word)) type = "keyword";
+      else if (ARDUINO_BUILTINS.has(word)) type = "builtin";
     }
+    tokens.push({ text: match, type });
+    lastIndex = m.index + match.length;
+  }
+  if (lastIndex < code.length) tokens.push({ text: code.slice(lastIndex), type: null });
+  return tokens;
+}
+
+// bracketPair is either null or [indexA, indexB] — two raw character
+// offsets into `code` that should get the bracket-match highlight.
+// Real brackets only ever land in untyped ("plain code") chunks, since
+// getBracketPairAtCursor() below only ever matches brackets outside of
+// comments/strings — so only null-type chunks need per-character work.
+function renderHighlightedHtml(code, bracketPair) {
+  const tokens = tokenize(code);
+  const [bi, bj] = bracketPair || [-1, -1];
+  let html = "";
+  let rawOffset = 0;
+
+  for (const tok of tokens) {
+    if (tok.type) {
+      html += `<span class="tok-${tok.type}">${escapeHtml(tok.text)}</span>`;
+      rawOffset += tok.text.length;
+    } else {
+      for (let i = 0; i < tok.text.length; i++) {
+        const idx = rawOffset + i;
+        const ch = escapeHtml(tok.text[i]);
+        html += idx === bi || idx === bj ? `<span class="tok-bracket-match">${ch}</span>` : ch;
+      }
+      rawOffset += tok.text.length;
+    }
+  }
+  return html;
+}
+
+// ---------- Matching-bracket lookup ----------
+// Finds the bracket pair touching the cursor, ignoring any brackets
+// that live inside a comment or string (so `// oops (` doesn't confuse
+// things). Works by blanking out comment/string text to spaces first —
+// same length, so real bracket positions are unaffected — then doing a
+// simple nested-depth scan over what's left.
+function buildMaskedForBracketMatching(code) {
+  TOKEN_REGEX.lastIndex = 0;
+  return code.replace(TOKEN_REGEX, (match, lineComment, blockComment, dquote, squote) =>
+    lineComment || blockComment || dquote || squote ? " ".repeat(match.length) : match
   );
+}
+
+const BRACKET_OPEN_TO_CLOSE = { "(": ")", "{": "}", "[": "]" };
+const BRACKET_CLOSE_TO_OPEN = { ")": "(", "}": "{", "]": "[" };
+
+function findMatchingBracket(masked, index) {
+  const ch = masked[index];
+  if (BRACKET_OPEN_TO_CLOSE[ch]) {
+    const close = BRACKET_OPEN_TO_CLOSE[ch];
+    let depth = 1;
+    for (let i = index + 1; i < masked.length; i++) {
+      if (masked[i] === ch) depth++;
+      else if (masked[i] === close && --depth === 0) return i;
+    }
+  } else if (BRACKET_CLOSE_TO_OPEN[ch]) {
+    const open = BRACKET_CLOSE_TO_OPEN[ch];
+    let depth = 1;
+    for (let i = index - 1; i >= 0; i--) {
+      if (masked[i] === ch) depth++;
+      else if (masked[i] === open && --depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function getBracketPairAtCursor() {
+  const pos = codeEl.selectionStart;
+  if (pos !== codeEl.selectionEnd) return null; // only for a plain cursor, not a text selection
+  const masked = buildMaskedForBracketMatching(codeEl.value);
+  const isBracket = (c) => c && "(){}[]".includes(c);
+  // Matches the usual editor convention: prefer the character just
+  // before the cursor, then fall back to just after it.
+  if (isBracket(masked[pos - 1])) {
+    const match = findMatchingBracket(masked, pos - 1);
+    if (match !== -1) return [pos - 1, match];
+  }
+  if (isBracket(masked[pos])) {
+    const match = findMatchingBracket(masked, pos);
+    if (match !== -1) return [pos, match];
+  }
+  return null;
 }
 
 function refreshHighlight() {
   // A trailing newline keeps the last (possibly empty) line the same
   // height in both layers, so the cursor and the colored text never
   // drift apart by a fraction of a line.
-  highlightCodeEl.innerHTML = highlightSyntax(codeEl.value) + "\n";
+  highlightCodeEl.innerHTML = renderHighlightedHtml(codeEl.value, getBracketPairAtCursor()) + "\n";
 }
 
 function refreshEditorViews() {
@@ -659,6 +759,18 @@ codeEl.addEventListener("scroll", () => {
   highlightLayerEl.scrollTop = codeEl.scrollTop;
   highlightLayerEl.scrollLeft = codeEl.scrollLeft;
 });
+// Cursor movement alone (a click, an arrow key) doesn't change the code
+// or the line count, but it can change which bracket pair should be
+// highlighted — so these two just refresh the highlight layer, not the
+// full editor view.
+codeEl.addEventListener("click", refreshHighlight);
+codeEl.addEventListener("keyup", refreshHighlight);
+
+// ---------- Auto-closing brackets and quotes ----------
+const AUTO_CLOSE_PAIRS = { "(": ")", "{": "}", "[": "]" };
+const AUTO_CLOSE_CLOSERS = new Set([")", "}", "]"]);
+const AUTO_CLOSE_QUOTES = new Set(['"', "'"]);
+
 codeEl.addEventListener("keydown", (e) => {
   if (e.key === "Tab") {
     e.preventDefault();
@@ -666,6 +778,64 @@ codeEl.addEventListener("keydown", (e) => {
     codeEl.value = codeEl.value.slice(0, start) + "  " + codeEl.value.slice(end);
     codeEl.selectionStart = codeEl.selectionEnd = start + 2;
     refreshEditorViews();
+    return;
+  }
+
+  const start = codeEl.selectionStart, end = codeEl.selectionEnd;
+  const value = codeEl.value;
+
+  // Opening bracket: wrap the current selection in it, or just insert
+  // an empty pair with the cursor left in the middle.
+  if (AUTO_CLOSE_PAIRS[e.key]) {
+    e.preventDefault();
+    const closer = AUTO_CLOSE_PAIRS[e.key];
+    const selected = value.slice(start, end);
+    codeEl.value = value.slice(0, start) + e.key + selected + closer + value.slice(end);
+    codeEl.selectionStart = start + 1;
+    codeEl.selectionEnd = start + 1 + selected.length;
+    refreshEditorViews();
+    return;
+  }
+
+  // Typing a closing bracket that's already right there: just step
+  // past it instead of inserting a duplicate.
+  if (AUTO_CLOSE_CLOSERS.has(e.key) && start === end && value[start] === e.key) {
+    e.preventDefault();
+    codeEl.selectionStart = codeEl.selectionEnd = start + 1;
+    refreshHighlight();
+    return;
+  }
+
+  // Quotes: same step-past behavior if one's already sitting there,
+  // otherwise wrap the selection (or insert an empty pair) like brackets.
+  if (AUTO_CLOSE_QUOTES.has(e.key)) {
+    if (start === end && value[start] === e.key) {
+      e.preventDefault();
+      codeEl.selectionStart = codeEl.selectionEnd = start + 1;
+      refreshHighlight();
+      return;
+    }
+    e.preventDefault();
+    const selected = value.slice(start, end);
+    codeEl.value = value.slice(0, start) + e.key + selected + e.key + value.slice(end);
+    codeEl.selectionStart = start + 1;
+    codeEl.selectionEnd = start + 1 + selected.length;
+    refreshEditorViews();
+    return;
+  }
+
+  // Backspacing right inside an empty auto-closed pair — e.g. "(|)" —
+  // removes both characters instead of leaving a stray closer behind.
+  if (e.key === "Backspace" && start === end && start > 0) {
+    const before = value[start - 1], after = value[start];
+    const emptyPairCloser = AUTO_CLOSE_PAIRS[before] || (AUTO_CLOSE_QUOTES.has(before) ? before : null);
+    if (emptyPairCloser && emptyPairCloser === after) {
+      e.preventDefault();
+      codeEl.value = value.slice(0, start - 1) + value.slice(start + 1);
+      codeEl.selectionStart = codeEl.selectionEnd = start - 1;
+      refreshEditorViews();
+      return;
+    }
   }
 });
 
@@ -691,7 +861,7 @@ function clearLog() { consoleEl.innerHTML = ""; }
 
 // Bump this string any time you save a change, so it's obvious whether
 // the browser is actually running your latest edit or a stale/cached copy.
-const SKETCHBENCH_VERSION = "v0.20";
+const SKETCHBENCH_VERSION = "v0.21";
 log(`Sketchbench ${SKETCHBENCH_VERSION} loaded.`, "muted");
 
 // ---------- Compile ----------
