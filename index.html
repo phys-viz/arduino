@@ -243,7 +243,7 @@
   <div id="console"><span class="muted">Ready. Write a sketch, then Compile, then Connect + Upload.</span></div>
 </main>
 
-<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.10</span></footer>
+<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.11</span></footer>
 
 <script>
 // ---------------------------------------------------------------------
@@ -321,7 +321,7 @@ function clearLog() { consoleEl.innerHTML = ""; }
 
 // Bump this string any time you save a change, so it's obvious whether
 // the browser is actually running your latest edit or a stale/cached copy.
-const SKETCHBENCH_VERSION = "v0.10";
+const SKETCHBENCH_VERSION = "v0.11";
 log(`Sketchbench ${SKETCHBENCH_VERSION} loaded.`, "muted");
 
 // ---------- Compile ----------
@@ -426,23 +426,32 @@ let retryCount = 0;
 const MAX_RETRIES = 4;
 
 new MutationObserver(() => {
-  const text = progressSpan.textContent.trim();
-  if (text && text !== lastProgressText) {
-    lastProgressText = text;
-    log("  " + text, "muted");
+  // Deferred with setTimeout(..., 0) on purpose: this observer fires
+  // exactly when the board's serial data is being handled, which is
+  // timing-sensitive (400ms timeouts internally). Doing our own DOM
+  // work (appending log lines, scrolling) immediately, in the same
+  // synchronous moment, could delay that handling just enough to cause
+  // a timeout. Pushing it to the next tick keeps our UI updates from
+  // ever competing with the time-critical part.
+  setTimeout(() => {
+    const text = progressSpan.textContent.trim();
+    if (text && text !== lastProgressText) {
+      lastProgressText = text;
+      log("  " + text, "muted");
 
-    if (text.startsWith("Error") && retryCount < MAX_RETRIES) {
-      retryCount++;
-      log(`  Hiccup on this attempt (${retryCount}/${MAX_RETRIES}) — this board's connection is a little flaky sometimes. Click Upload again to retry.`, "warn");
-      uploadBtn.disabled = !compiledHexText;
-    } else if (text.startsWith("Error")) {
-      log("Upload kept failing after several attempts. Try unplugging and replugging the board, then Upload again.", "err");
-      uploadBtn.disabled = !compiledHexText;
-    } else if (text === "100%" || text.toLowerCase().includes("done")) {
-      log("Upload complete. The board should be running your new sketch now.", "ok");
-      uploadBtn.disabled = !compiledHexText;
+      if (text.startsWith("Error") && retryCount < MAX_RETRIES) {
+        retryCount++;
+        log(`  Hiccup on this attempt (${retryCount}/${MAX_RETRIES}) — this board's connection is a little flaky sometimes. Click Upload again to retry.`, "warn");
+        uploadBtn.disabled = !compiledHexText;
+      } else if (text.startsWith("Error")) {
+        log("Upload kept failing after several attempts. Try unplugging and replugging the board, then Upload again.", "err");
+        uploadBtn.disabled = !compiledHexText;
+      } else if (text === "100%" || text.toLowerCase().includes("done")) {
+        log("Upload complete. The board should be running your new sketch now.", "ok");
+        uploadBtn.disabled = !compiledHexText;
+      }
     }
-  }
+  }, 0);
 }).observe(progressSpan, { childList: true, characterData: true, subtree: true });
 
 uploadBtn.addEventListener("click", () => {
