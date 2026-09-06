@@ -243,7 +243,7 @@
   <div id="console"><span class="muted">Ready. Write a sketch, then Compile, then Connect + Upload.</span></div>
 </main>
 
-<footer>Sketchbench — a classroom Arduino uploader</footer>
+<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.6</span></footer>
 
 <script>
 // ---------------------------------------------------------------------
@@ -318,6 +318,11 @@ function log(msg, cls) {
   consoleEl.scrollTop = consoleEl.scrollHeight;
 }
 function clearLog() { consoleEl.innerHTML = ""; }
+
+// Bump this string any time you save a change, so it's obvious whether
+// the browser is actually running your latest edit or a stale/cached copy.
+const SKETCHBENCH_VERSION = "v0.6";
+log(`Sketchbench ${SKETCHBENCH_VERSION} loaded.`, "muted");
 
 // ---------- Compile ----------
 const compileBtn = document.getElementById("compileBtn");
