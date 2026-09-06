@@ -384,6 +384,10 @@
     border-top: 1px solid #23281f;
     flex-shrink: 0;
   }
+  .monitor-send-row { flex-wrap: wrap; }
+  .monitor-send-row input { min-width: 120px; }
+  .toolbar select { max-width: 160px; }
+
   .monitor-send-row input {
     flex: 1;
     background: #1a1f1c;
@@ -465,6 +469,13 @@
   <div class="toolbar">
     <button id="compileBtn">Compile</button>
     <button id="uploadBtn" disabled>Upload to board</button>
+    <select id="starterSelect" aria-label="Open starter sketch" title="Open a starter sketch">
+      <option value="">Examples…</option>
+      <option value="blank">Blank sketch</option>
+      <option value="blink">Blink</option>
+      <option value="button">Button + LED</option>
+      <option value="analog">Analog sensor</option>
+    </select>
     <button id="saveBtn" class="quiet">Save .ino</button>
     <button id="loadBtn" class="quiet">Load .ino</button>
     <button id="monitorToggleBtn" class="quiet">Serial Monitor</button>
@@ -520,6 +531,12 @@
     </div>
     <div class="monitor-send-row">
       <input type="text" id="monitorSendInput" placeholder="Type something to send to the board, then press Enter..." disabled />
+      <select id="serialEnding" aria-label="Serial line ending" title="Characters added to each message">
+        <option value="lf">Newline</option>
+        <option value="none">No line ending</option>
+        <option value="cr">Carriage return</option>
+        <option value="crlf">Both CR + LF</option>
+      </select>
       <button id="monitorSendBtn" disabled>Send</button>
     </div>
   </div>
@@ -532,6 +549,9 @@
       <button id="helpCloseBtn" class="quiet">Close</button>
     </div>
     <div class="help-body">
+      <p><strong>Examples</strong> opens a starter sketch. You’ll be asked before replacing your code.</p>
+      <p><strong>Editing:</strong> Enter continues indentation; Tab indents selected lines and Shift+Tab unindents. Ctrl+Z undoes typing or automatic edits; Ctrl+Shift+Z or Ctrl+Y redoes them (Command on Mac). Undo history lasts for this session.</p>
+      <p><strong>Sending serial messages:</strong> choose Newline, No line ending, Carriage return, or Both CR + LF beside Send.</p>
       <p><strong>Zio Arduino</strong> is a browser-based tool for writing, compiling, and uploading code to an Arduino Uno or Nano — no software to install, no account needed. It also includes a Serial Monitor and live data plotter for watching what your board is doing while it runs.</p>
       <p><strong>1. Write your code</strong>, then click <strong>Compile</strong>. This turns it into a program the board can run — it doesn't touch the board yet.</p>
       <p><strong>2. Click Upload.</strong> The first time you connect a board, Chrome will ask you to pick it from a list — after that, it's remembered and won't ask again.</p>
@@ -543,7 +563,7 @@
   </div>
 </div>
 
-<footer>Zio Arduino — a classroom Arduino uploader · <span id="versionTag">v0.25</span></footer>
+<footer>Zio Arduino — a classroom Arduino uploader · <span id="versionTag">v0.26</span></footer>
 
 <script>
 // ---------------------------------------------------------------------
@@ -791,9 +811,65 @@ function refreshEditorViews() {
   editorChanged();
 }
 
-codeEl.addEventListener("input", () => {
+// One bounded undo history covers typing, indentation, auto-pairs and examples.
+const undoStack = [], redoStack = [];
+let beforeEdit = null;
+let lastTypingAt = 0;
+let lastTypingType = "";
+let lastTypedEnd = -1;
+function editorSnapshot() {
+  return { text: codeEl.value, start: codeEl.selectionStart, end: codeEl.selectionEnd };
+}
+let previousEditor = editorSnapshot();
+function rememberEdit(before, typingType = "") {
+  if (before.text === codeEl.value) return;
+  const now = Date.now();
+  const group = typingType && typingType === lastTypingType && now - lastTypingAt < 750 &&
+    before.start === before.end && before.start === lastTypedEnd;
+  if (!group) {
+    undoStack.push(before);
+    if (undoStack.length > 100) undoStack.shift();
+  }
+  redoStack.length = 0;
+  lastTypingType = typingType;
+  lastTypingAt = now;
+  lastTypedEnd = codeEl.selectionEnd;
+}
+function applyEditorEdit(text, start, end = start) {
+  const before = editorSnapshot();
+  codeEl.value = text;
+  codeEl.setSelectionRange(start, end);
+  rememberEdit(before);
   refreshEditorViews();
-  localStorage.setItem("sketchbench_code", codeEl.value);
+  previousEditor = editorSnapshot();
+  codeEl.focus();
+}
+function travelHistory(redo = false) {
+  const from = redo ? redoStack : undoStack;
+  const to = redo ? undoStack : redoStack;
+  if (!from.length) return;
+  to.push(editorSnapshot());
+  const state = from.pop();
+  codeEl.value = state.text;
+  codeEl.setSelectionRange(state.start, state.end);
+  lastTypingType = "";
+  refreshEditorViews();
+  previousEditor = editorSnapshot();
+}
+codeEl.addEventListener("beforeinput", (e) => {
+  if (e.inputType === "historyUndo" || e.inputType === "historyRedo") {
+    e.preventDefault();
+    travelHistory(e.inputType === "historyRedo");
+    return;
+  }
+  beforeEdit = editorSnapshot();
+});
+codeEl.addEventListener("input", (e) => {
+  const type = ["insertText", "deleteContentBackward", "deleteContentForward"].includes(e.inputType) ? e.inputType : "";
+  rememberEdit(beforeEdit || previousEditor, type);
+  beforeEdit = null;
+  refreshEditorViews();
+  previousEditor = editorSnapshot();
 });
 codeEl.addEventListener("scroll", () => {
   lineNumbersEl.scrollTop = codeEl.scrollTop;
@@ -813,75 +889,83 @@ const AUTO_CLOSE_CLOSERS = new Set([")", "}", "]"]);
 const AUTO_CLOSE_QUOTES = new Set(['"', "'"]);
 
 codeEl.addEventListener("keydown", (e) => {
+  if (e.isComposing) return;
+  if (e.ctrlKey || e.metaKey) {
+    if (e.key.toLowerCase() === "z" || e.key.toLowerCase() === "y") {
+      e.preventDefault();
+      travelHistory(e.key.toLowerCase() === "y" || e.shiftKey);
+    }
+    return;
+  }
+  if (e.altKey) return;
+  const start = codeEl.selectionStart, end = codeEl.selectionEnd, value = codeEl.value;
   if (e.key === "Tab") {
     e.preventDefault();
-    const start = codeEl.selectionStart, end = codeEl.selectionEnd;
-    codeEl.value = codeEl.value.slice(0, start) + "  " + codeEl.value.slice(end);
-    codeEl.selectionStart = codeEl.selectionEnd = start + 2;
-    refreshEditorViews();
+    if (start === end && !e.shiftKey) {
+      applyEditorEdit(value.slice(0, start) + "  " + value.slice(end), start + 2);
+      return;
+    }
+    const first = (start === 0 ? 0 : value.lastIndexOf("\n", start - 1) + 1);
+    const last = end > start && value[end - 1] === "\n" ? end - 1 : end;
+    const nextBreak = value.indexOf("\n", last);
+    const stop = nextBreak < 0 ? value.length : nextBreak;
+    const lines = value.slice(first, stop).split("\n");
+    let totalDelta = 0, firstDelta = 0;
+    const updated = lines.map((line, i) => {
+      const removed = e.shiftKey ? (line.match(/^(?:\t| {1,2})/) || [""])[0].length : 0;
+      const delta = e.shiftKey ? -removed : 2;
+      if (i === 0) firstDelta = delta;
+      totalDelta += delta;
+      return e.shiftKey ? line.slice(removed) : "  " + line;
+    }).join("\n");
+    const newStart = Math.max(first, start + firstDelta);
+    const newEnd = start === end ? newStart : Math.max(newStart, end + totalDelta);
+    applyEditorEdit(value.slice(0, first) + updated + value.slice(stop), newStart, newEnd);
     return;
   }
-
-  const start = codeEl.selectionStart, end = codeEl.selectionEnd;
-  const value = codeEl.value;
-
-  // Opening bracket: wrap the current selection in it, or just insert
-  // an empty pair with the cursor left in the middle.
-  if (AUTO_CLOSE_PAIRS[e.key]) {
+  if (e.key === "Enter") {
     e.preventDefault();
-    const closer = AUTO_CLOSE_PAIRS[e.key];
-    const selected = value.slice(start, end);
-    codeEl.value = value.slice(0, start) + e.key + selected + closer + value.slice(end);
-    codeEl.selectionStart = start + 1;
-    codeEl.selectionEnd = start + 1 + selected.length;
-    refreshEditorViews();
+    const line = value.slice((start === 0 ? 0 : value.lastIndexOf("\n", start - 1) + 1), start);
+    const indent = (line.match(/^[ \t]*/) || [""])[0];
+    const maskedBefore = buildMaskedForBracketMatching(value).slice(0, start).trimEnd();
+    const opens = maskedBefore.endsWith("{");
+    const extra = opens ? "  " : "";
+    const paired = opens && value[end] === "}";
+    const insertion = "\n" + indent + extra + (paired ? "\n" + indent : "");
+    applyEditorEdit(value.slice(0, start) + insertion + value.slice(end), start + 1 + indent.length + extra.length);
     return;
   }
-
-  // Typing a closing bracket that's already right there: just step
-  // past it instead of inserting a duplicate.
   if (AUTO_CLOSE_CLOSERS.has(e.key) && start === end && value[start] === e.key) {
     e.preventDefault();
-    codeEl.selectionStart = codeEl.selectionEnd = start + 1;
+    codeEl.setSelectionRange(start + 1, start + 1);
     refreshHighlight();
     return;
   }
-
-  // Quotes: same step-past behavior if one's already sitting there,
-  // otherwise wrap the selection (or insert an empty pair) like brackets.
-  if (AUTO_CLOSE_QUOTES.has(e.key)) {
-    if (start === end && value[start] === e.key) {
-      e.preventDefault();
-      codeEl.selectionStart = codeEl.selectionEnd = start + 1;
-      refreshHighlight();
-      return;
-    }
+  if (AUTO_CLOSE_QUOTES.has(e.key) && start === end && value[start] === e.key) {
     e.preventDefault();
-    const selected = value.slice(start, end);
-    codeEl.value = value.slice(0, start) + e.key + selected + e.key + value.slice(end);
-    codeEl.selectionStart = start + 1;
-    codeEl.selectionEnd = start + 1 + selected.length;
-    refreshEditorViews();
+    codeEl.setSelectionRange(start + 1, start + 1);
+    refreshHighlight();
     return;
   }
-
-  // Backspacing right inside an empty auto-closed pair — e.g. "(|)" —
-  // removes both characters instead of leaving a stray closer behind.
+  if (AUTO_CLOSE_PAIRS[e.key] || AUTO_CLOSE_QUOTES.has(e.key)) {
+    e.preventDefault();
+    const closer = AUTO_CLOSE_PAIRS[e.key] || e.key;
+    applyEditorEdit(value.slice(0, start) + e.key + value.slice(start, end) + closer + value.slice(end), start + 1, end + 1);
+    return;
+  }
   if (e.key === "Backspace" && start === end && start > 0) {
-    const before = value[start - 1], after = value[start];
-    const emptyPairCloser = AUTO_CLOSE_PAIRS[before] || (AUTO_CLOSE_QUOTES.has(before) ? before : null);
-    if (emptyPairCloser && emptyPairCloser === after) {
+    const before = value[start - 1];
+    const closer = AUTO_CLOSE_PAIRS[before] || (AUTO_CLOSE_QUOTES.has(before) ? before : null);
+    if (closer && closer === value[start]) {
       e.preventDefault();
-      codeEl.value = value.slice(0, start - 1) + value.slice(start + 1);
-      codeEl.selectionStart = codeEl.selectionEnd = start - 1;
-      refreshEditorViews();
-      return;
+      applyEditorEdit(value.slice(0, start - 1) + value.slice(start + 1), start - 1);
     }
   }
 });
 
 codeEl.value = localStorage.getItem("sketchbench_code") || DEFAULT_SKETCH;
 refreshEditorViews();
+previousEditor = editorSnapshot();
 
 const boardSelect = document.getElementById("board");
 boardSelect.value = localStorage.getItem("sketchbench_board") || "uno";
@@ -906,7 +990,7 @@ function clearLog() { consoleEl.innerHTML = ""; }
 
 // Bump this string any time you save a change, so it's obvious whether
 // the browser is actually running your latest edit or a stale/cached copy.
-const ZIO_VERSION = "v0.25";
+const ZIO_VERSION = "v0.26";
 log(`Zio Arduino ${ZIO_VERSION} loaded.`, "muted");
 
 // ---------- Compile ----------
@@ -953,10 +1037,43 @@ document.getElementById("saveBtn").addEventListener("click", async () => {
 // works everywhere, just with the browser's default look rather than a
 // native-feeling dialog).
 function loadCodeIntoEditor(text) {
-  codeEl.value = text;
-  refreshEditorViews();
-  localStorage.setItem("sketchbench_code", codeEl.value);
+  applyEditorEdit(text, 0);
+  codeEl.scrollTop = codeEl.scrollLeft = 0;
+  highlightLayerEl.scrollTop = highlightLayerEl.scrollLeft = 0;
+  lineNumbersEl.scrollTop = 0;
 }
+
+const STARTER_SKETCHES = {
+  blank: "void setup() {\n  \n}\n\nvoid loop() {\n  \n}\n",
+  blink: DEFAULT_SKETCH,
+  button: `// Connect a pushbutton between pin 2 and GND. Press to light the LED.
+const int BUTTON_PIN = 2;
+void setup() {
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(LED_BUILTIN, OUTPUT);
+}
+void loop() {
+  digitalWrite(LED_BUILTIN, digitalRead(BUTTON_PIN) == LOW ? HIGH : LOW);
+}
+`,
+  analog: `// Read an analog sensor on A0 (0-1023 on a classic Uno/Nano).
+// Open Serial Monitor at 9600 baud; switch to Plot to graph readings.
+void setup() {
+  Serial.begin(9600);
+}
+void loop() {
+  Serial.println(analogRead(A0));
+  delay(50);
+}
+`
+};
+document.getElementById("starterSelect").addEventListener("change", (e) => {
+  const key = e.target.value;
+  e.target.value = "";
+  if (!Object.hasOwn(STARTER_SKETCHES, key)) return;
+  if (codeEl.value.trim() && !window.confirm("Replace the current code with this example? Save .ino first if needed. You can also Undo this change.")) return;
+  loadCodeIntoEditor(STARTER_SKETCHES[key]);
+});
 
 document.getElementById("loadBtn").addEventListener("click", async () => {
   if ("showOpenFilePicker" in window) {
@@ -1247,6 +1364,11 @@ monitorConnectBtn.addEventListener("click", () => {
   if (monitorPort) stopMonitor(); else startMonitor();
 });
 let monitorWriteTask = null;
+const SERIAL_ENDINGS = { none: "", lf: "\n", cr: "\r", crlf: "\r\n" };
+const serialEnding = document.getElementById("serialEnding");
+const savedEnding = localStorage.getItem("zio_serial_ending");
+serialEnding.value = Object.hasOwn(SERIAL_ENDINGS, savedEnding) ? savedEnding : "lf";
+serialEnding.addEventListener("change", () => localStorage.setItem("zio_serial_ending", serialEnding.value));
 async function sendMonitorInput() {
   if (!monitorPort || monitorTransition || monitorSending || !monitorSendInput.value) return;
   monitorSending = true;
@@ -1256,7 +1378,7 @@ async function sendMonitorInput() {
     let writer;
     try {
       writer = monitorPort.writable.getWriter();
-      await writer.write(new TextEncoder().encode(value + "\n"));
+      await writer.write(new TextEncoder().encode(value + (SERIAL_ENDINGS[serialEnding.value] ?? "\n")));
       if (monitorSendInput.value === value) monitorSendInput.value = "";
     } catch (err) {
       appendMonitorLine(`Couldn't send: ${err.message}`, true);
