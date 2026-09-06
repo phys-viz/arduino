@@ -237,6 +237,92 @@
     header { padding: 12px 14px; }
     main { padding: 14px 14px 10px; }
   }
+
+  /* ---------- Serial Monitor overlay ---------- */
+  .monitor-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 20, 15, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    padding: 24px;
+  }
+
+  .monitor-panel {
+    background: var(--console-bg);
+    border: 1px solid #23281f;
+    border-radius: var(--radius);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+    width: 100%;
+    max-width: 760px;
+    height: 100%;
+    max-height: 560px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .monitor-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 12px 14px;
+    border-bottom: 1px solid #23281f;
+    color: var(--console-text);
+    flex-shrink: 0;
+  }
+  .monitor-header .spacer { flex: 1; }
+  .monitor-header select {
+    background: #1a1f1c;
+    color: var(--console-text);
+    border: 1px solid #2e3630;
+    font-size: 13px;
+    padding: 6px 10px;
+  }
+  .monitor-header button {
+    font-size: 13px;
+    padding: 7px 12px;
+  }
+  .monitor-hint {
+    font-size: 11.5px;
+    color: #7a8378;
+  }
+
+  .monitor-output {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 12px 14px;
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--console-text);
+    white-space: pre-wrap;
+  }
+  .monitor-output .line-err { color: var(--err); }
+
+  .monitor-send-row {
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px;
+    border-top: 1px solid #23281f;
+    flex-shrink: 0;
+  }
+  .monitor-send-row input {
+    flex: 1;
+    background: #1a1f1c;
+    color: var(--console-text);
+    border: 1px solid #2e3630;
+    border-radius: var(--radius-sm);
+    padding: 9px 12px;
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: 13px;
+    outline: none;
+  }
+  .monitor-send-row input:disabled { opacity: 0.5; }
 </style>
 </head>
 <body>
@@ -263,6 +349,7 @@
     <button id="uploadBtn" disabled>Upload to board</button>
     <button id="saveBtn" class="quiet">Save .ino</button>
     <button id="loadBtn" class="quiet">Load .ino</button>
+    <button id="monitorToggleBtn" class="quiet">Serial Monitor</button>
     <input type="file" id="loadFileInput" accept=".ino,.txt,text/plain" style="display:none" />
     <span class="status-chip" id="connChip">No board connected</span>
     <span class="status-chip" id="hexChip">Not compiled yet</span>
@@ -281,7 +368,40 @@
   <div id="console"><span class="muted">Ready. Write a sketch, then Compile, then Connect + Upload.</span></div>
 </main>
 
-<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.15</span></footer>
+<!--
+  Serial Monitor — a separate, independent WebSerial connection from the
+  Upload flow above. Only one thing can hold a board's serial port at a
+  time, so this and Upload can't both be connected at once — closing one
+  frees the port for the other.
+-->
+<div id="monitorOverlay" class="monitor-overlay" style="display:none">
+  <div class="monitor-panel">
+    <div class="monitor-header">
+      <strong>Serial Monitor</strong>
+      <select id="monitorBaud">
+        <option value="9600" selected>9600 baud</option>
+        <option value="115200">115200 baud</option>
+        <option value="57600">57600 baud</option>
+        <option value="38400">38400 baud</option>
+        <option value="19200">19200 baud</option>
+        <option value="4800">4800 baud</option>
+      </select>
+      <span class="monitor-hint">Baud rate must match the Serial.begin(...) in your sketch.</span>
+      <div class="spacer"></div>
+      <button id="monitorConnectBtn" class="quiet">Connect</button>
+      <button id="monitorClearBtn" class="quiet">Clear</button>
+      <button id="monitorSaveBtn" class="quiet">Save log</button>
+      <button id="monitorCloseBtn" class="quiet">Close</button>
+    </div>
+    <div id="monitorOutput" class="monitor-output"></div>
+    <div class="monitor-send-row">
+      <input type="text" id="monitorSendInput" placeholder="Type something to send to the board, then press Enter..." disabled />
+      <button id="monitorSendBtn" disabled>Send</button>
+    </div>
+  </div>
+</div>
+
+<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.16</span></footer>
 
 <script>
 // ---------------------------------------------------------------------
@@ -359,7 +479,7 @@ function clearLog() { consoleEl.innerHTML = ""; }
 
 // Bump this string any time you save a change, so it's obvious whether
 // the browser is actually running your latest edit or a stale/cached copy.
-const SKETCHBENCH_VERSION = "v0.15";
+const SKETCHBENCH_VERSION = "v0.16";
 log(`Sketchbench ${SKETCHBENCH_VERSION} loaded.`, "muted");
 
 // ---------- Compile ----------
@@ -576,6 +696,146 @@ uploadBtn.addEventListener("click", () => {
   log(`  (sending hex-href=${hexUrl}, board=${boardName})`, "muted");
   uploadBtn.disabled = true;
   realUploaderBtn.click();
+});
+
+// ---------- Serial Monitor ----------
+// A separate, independent WebSerial connection from the Upload flow
+// above — deliberately simple, since a monitor only needs to open the
+// port and read/write plain bytes, with none of the bootloader
+// handshake Upload requires. Only one thing can hold the port at a
+// time, so this and Upload can't be connected simultaneously.
+const monitorOverlay = document.getElementById("monitorOverlay");
+const monitorOutput = document.getElementById("monitorOutput");
+const monitorBaud = document.getElementById("monitorBaud");
+const monitorConnectBtn = document.getElementById("monitorConnectBtn");
+const monitorSendInput = document.getElementById("monitorSendInput");
+const monitorSendBtn = document.getElementById("monitorSendBtn");
+
+let monitorPort = null;
+let monitorReader = null;
+let monitorKeepReading = false;
+let monitorLines = [];
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+function appendMonitorLine(text, isError) {
+  const now = new Date();
+  const stamp = `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
+  const fullLine = `[${stamp}] ${text}`;
+  monitorLines.push(fullLine);
+
+  const nearBottom = monitorOutput.scrollHeight - monitorOutput.scrollTop - monitorOutput.clientHeight < 40;
+  const div = document.createElement("div");
+  if (isError) div.className = "line-err";
+  div.textContent = fullLine;
+  monitorOutput.appendChild(div);
+  if (nearBottom) monitorOutput.scrollTop = monitorOutput.scrollHeight;
+}
+
+async function startMonitor() {
+  try {
+    monitorPort = await navigator.serial.requestPort();
+    await monitorPort.open({ baudRate: parseInt(monitorBaud.value, 10) });
+  } catch (err) {
+    if (err.name !== "AbortError") appendMonitorLine(`Couldn't open the board: ${err.message}`, true);
+    monitorPort = null;
+    return;
+  }
+
+  monitorKeepReading = true;
+  monitorReader = monitorPort.readable.getReader();
+  monitorConnectBtn.textContent = "Disconnect";
+  monitorBaud.disabled = true;
+  monitorSendInput.disabled = false;
+  monitorSendBtn.disabled = false;
+  appendMonitorLine("— connected —");
+
+  const decoder = new TextDecoder();
+  let lineBuffer = "";
+  try {
+    while (monitorKeepReading) {
+      const { value, done } = await monitorReader.read();
+      if (done) break;
+      if (!value) continue;
+      lineBuffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = lineBuffer.indexOf("\n")) >= 0) {
+        appendMonitorLine(lineBuffer.slice(0, idx).replace(/\r$/, ""));
+        lineBuffer = lineBuffer.slice(idx + 1);
+      }
+    }
+  } catch (err) {
+    if (monitorKeepReading) appendMonitorLine(`Connection lost: ${err.message}`, true);
+  }
+}
+
+async function stopMonitor() {
+  monitorKeepReading = false;
+  try { await monitorReader.cancel(); } catch (e) {}
+  try { monitorReader.releaseLock(); } catch (e) {}
+  try { await monitorPort.close(); } catch (e) {}
+  monitorPort = null;
+  monitorReader = null;
+  monitorConnectBtn.textContent = "Connect";
+  monitorBaud.disabled = false;
+  monitorSendInput.disabled = true;
+  monitorSendBtn.disabled = true;
+  appendMonitorLine("— disconnected —");
+}
+
+monitorConnectBtn.addEventListener("click", () => {
+  if (monitorPort) stopMonitor(); else startMonitor();
+});
+
+async function sendMonitorInput() {
+  if (!monitorPort || !monitorSendInput.value) return;
+  const writer = monitorPort.writable.getWriter();
+  await writer.write(new TextEncoder().encode(monitorSendInput.value + "\n"));
+  writer.releaseLock();
+  monitorSendInput.value = "";
+}
+monitorSendBtn.addEventListener("click", sendMonitorInput);
+monitorSendInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") sendMonitorInput();
+});
+
+document.getElementById("monitorClearBtn").addEventListener("click", () => {
+  monitorLines = [];
+  monitorOutput.innerHTML = "";
+});
+
+document.getElementById("monitorSaveBtn").addEventListener("click", async () => {
+  const text = monitorLines.join("\n");
+  if ("showSaveFilePicker" in window) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: "serial-log.txt",
+        types: [{ description: "Text file", accept: { "text/plain": [".txt"] } }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(text);
+      await writable.close();
+      return;
+    } catch (err) {
+      if (err.name === "AbortError") return;
+    }
+  }
+  const blob = new Blob([text], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "serial-log.txt";
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+document.getElementById("monitorToggleBtn").addEventListener("click", () => {
+  monitorOverlay.style.display = "flex";
+});
+
+document.getElementById("monitorCloseBtn").addEventListener("click", async () => {
+  if (monitorPort) await stopMonitor();
+  monitorOverlay.style.display = "none";
 });
 </script>
 </body>
