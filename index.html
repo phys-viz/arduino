@@ -106,6 +106,13 @@
   }
   button.secondary:hover:not(:disabled) { background: rgba(201, 146, 47, 0.18); }
 
+  button.quiet {
+    background: #fff;
+    color: var(--ink);
+    border: 1px solid #d8d0bb;
+  }
+  button.quiet:hover:not(:disabled) { background: #f7f3e8; }
+
   main {
     flex: 1;
     display: flex;
@@ -226,6 +233,7 @@
   <div class="toolbar">
     <button id="compileBtn">Compile</button>
     <button id="uploadBtn" disabled>Upload to board</button>
+    <button id="saveBtn" class="quiet">Save .ino</button>
     <span class="status-chip" id="connChip">No board connected</span>
     <span class="status-chip" id="hexChip">Not compiled yet</span>
   </div>
@@ -243,7 +251,7 @@
   <div id="console"><span class="muted">Ready. Write a sketch, then Compile, then Connect + Upload.</span></div>
 </main>
 
-<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.11</span></footer>
+<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.13</span></footer>
 
 <script>
 // ---------------------------------------------------------------------
@@ -321,7 +329,7 @@ function clearLog() { consoleEl.innerHTML = ""; }
 
 // Bump this string any time you save a change, so it's obvious whether
 // the browser is actually running your latest edit or a stale/cached copy.
-const SKETCHBENCH_VERSION = "v0.11";
+const SKETCHBENCH_VERSION = "v0.13";
 log(`Sketchbench ${SKETCHBENCH_VERSION} loaded.`, "muted");
 
 // ---------- Compile ----------
@@ -329,6 +337,39 @@ const compileBtn = document.getElementById("compileBtn");
 const uploadBtn = document.getElementById("uploadBtn");
 const hexChip = document.getElementById("hexChip");
 let compiledHexText = null; // raw Intel HEX text, exactly as the compiler produced it
+
+// ---------- Save .ino ----------
+// Uses Chrome's real "Save As" dialog when available (lets the student
+// pick folder + filename, including Google Drive on ChromeOS), falling
+// back to a plain auto-download for any browser/context where that
+// isn't supported.
+document.getElementById("saveBtn").addEventListener("click", async () => {
+  const text = codeEl.value;
+
+  if ("showSaveFilePicker" in window) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: "sketch.ino",
+        types: [{ description: "Arduino sketch", accept: { "text/plain": [".ino"] } }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(text);
+      await writable.close();
+      return;
+    } catch (err) {
+      if (err.name === "AbortError") return; // student clicked Cancel — not an error
+      // any other failure: fall through to the plain download below
+    }
+  }
+
+  const blob = new Blob([text], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "sketch.ino";
+  a.click();
+  URL.revokeObjectURL(url);
+});
 
 compileBtn.addEventListener("click", async () => {
   clearLog();
