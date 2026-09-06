@@ -243,7 +243,7 @@
   <div id="console"><span class="muted">Ready. Write a sketch, then Compile, then Connect + Upload.</span></div>
 </main>
 
-<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.9</span></footer>
+<footer>Sketchbench — a classroom Arduino uploader · <span id="versionTag">v0.10</span></footer>
 
 <script>
 // ---------------------------------------------------------------------
@@ -321,7 +321,7 @@ function clearLog() { consoleEl.innerHTML = ""; }
 
 // Bump this string any time you save a change, so it's obvious whether
 // the browser is actually running your latest edit or a stale/cached copy.
-const SKETCHBENCH_VERSION = "v0.9";
+const SKETCHBENCH_VERSION = "v0.10";
 log(`Sketchbench ${SKETCHBENCH_VERSION} loaded.`, "muted");
 
 // ---------- Compile ----------
@@ -415,13 +415,12 @@ const LIBRARY_BOARD_NAMES = {
 const realUploaderBtn = document.getElementById("realUploaderBtn");
 const progressSpan = realUploaderBtn.querySelector(".upload-progress");
 
-// Mirror the library's own progress text into our console, and
-// automatically retry a few times on failure. This board's connection
-// is a little electrically marginal — most individual steps succeed,
-// but any single one can randomly time out. Their library only retries
-// the very first step automatically, so a hiccup on any later step
-// otherwise ends the whole attempt. Retrying the whole sequence a
-// couple of times gives it another chance to get a clean run.
+// Mirror the library's own progress text into our console. Note: we
+// can't auto-retry by having code click the button again — Chrome only
+// allows the board-picker popup to appear right after a real, physical
+// click from a person, never from code running on a timer. So on
+// failure we ask the person to click Upload again themselves, which
+// still counts as a fresh, valid click.
 let lastProgressText = "";
 let retryCount = 0;
 const MAX_RETRIES = 4;
@@ -434,8 +433,8 @@ new MutationObserver(() => {
 
     if (text.startsWith("Error") && retryCount < MAX_RETRIES) {
       retryCount++;
-      log(`  Hiccup on this attempt — retrying (${retryCount}/${MAX_RETRIES})...`, "warn");
-      setTimeout(() => realUploaderBtn.click(), 1200);
+      log(`  Hiccup on this attempt (${retryCount}/${MAX_RETRIES}) — this board's connection is a little flaky sometimes. Click Upload again to retry.`, "warn");
+      uploadBtn.disabled = !compiledHexText;
     } else if (text.startsWith("Error")) {
       log("Upload kept failing after several attempts. Try unplugging and replugging the board, then Upload again.", "err");
       uploadBtn.disabled = !compiledHexText;
