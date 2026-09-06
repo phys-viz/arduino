@@ -4,6 +4,15 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Sketchbench — Arduino Uploader</title>
+<!--
+  This is a published, independently-maintained library (not ours) that
+  already reliably talks to Uno/Nano-class boards over WebSerial. We use
+  it for the actual USB upload step instead of our own hand-rolled
+  version, since it's already proven to work correctly on the exact
+  board/driver/OS combination this classroom uses.
+  https://github.com/dbuezas/arduino-web-uploader
+-->
+<script src="https://github.com/dbuezas/arduino-web-uploader/releases/download/v1.1.2/main.js"></script>
 <style>
   :root {
     --board-green: #0f3d2e;
@@ -221,6 +230,16 @@
     <span class="status-chip" id="hexChip">Not compiled yet</span>
   </div>
 
+  <!--
+    Hidden button that the arduino-web-uploader library auto-wires itself
+    to (it scans for the "arduino-uploader" attribute). We set hex-href
+    and board on it right before triggering a click programmatically, so
+    the actual USB upload goes through their proven code, not ours.
+  -->
+  <button id="realUploaderBtn" arduino-uploader hex-href="" board="nano" style="display:none">
+    <span class="upload-progress"></span>
+  </button>
+
   <div id="console"><span class="muted">Ready. Write a sketch, then Compile, then Connect + Upload.</span></div>
 </main>
 
@@ -233,7 +252,8 @@
 // for a hosted setup it'll be a real URL. This is the ONLY line most
 // deployments need to change.
 // ---------------------------------------------------------------------
-const COMPILE_SERVER_URL = "https://gristle-bronco-saturate.ngrok-free.dev";
+const COMPILE_SERVER_URL = "http://localhost:3131";
+
 const BOARD_BAUD = {
   uno: 115200,
   nano_new: 115200,
@@ -303,11 +323,11 @@ function clearLog() { consoleEl.innerHTML = ""; }
 const compileBtn = document.getElementById("compileBtn");
 const uploadBtn = document.getElementById("uploadBtn");
 const hexChip = document.getElementById("hexChip");
-let compiledHexBytes = null; // Uint8Array of raw flash bytes, ready to write
+let compiledHexText = null; // raw Intel HEX text, exactly as the compiler produced it
 
 compileBtn.addEventListener("click", async () => {
   clearLog();
-  compiledHexBytes = null;
+  compiledHexText = null;
   uploadBtn.disabled = true;
   hexChip.textContent = "Not compiled yet";
   hexChip.classList.remove("connected");
@@ -328,12 +348,11 @@ compileBtn.addEventListener("click", async () => {
       return;
     }
 
-    const rawHex = atob(data.hex);
-    compiledHexBytes = parseIntelHex(rawHex);
-    log(`Compiled OK — ${compiledHexBytes.length} bytes of program.`, "ok");
-    hexChip.textContent = `Compiled: ${compiledHexBytes.length} bytes`;
+    compiledHexText = atob(data.hex);
+    log(`Compiled OK — ${compiledHexText.length} characters of program data.`, "ok");
+    hexChip.textContent = "Compiled — ready to upload";
     hexChip.classList.add("connected");
-    uploadBtn.disabled = !serialPort;
+    uploadBtn.disabled = false;
   } catch (err) {
     log("Couldn't reach the compile server. Is it running, and is " + COMPILE_SERVER_URL + " reachable from this browser?", "err");
     log(String(err), "err");
@@ -371,205 +390,57 @@ function parseIntelHex(hexText) {
 // ---------- WebSerial connect ----------
 const connectBtn = document.getElementById("connectBtn");
 const connChip = document.getElementById("connChip");
-let serialPort = null;
 
 if (!("serial" in navigator)) {
   connectBtn.disabled = true;
   connChip.textContent = "This browser doesn't support WebSerial — use Chrome or Edge.";
+} else {
+  connChip.textContent = "Click Upload to pick your board";
 }
+connectBtn.style.display = "none"; // the library below handles board selection itself, at upload time
 
-connectBtn.addEventListener("click", async () => {
-  try {
-    serialPort = await navigator.serial.requestPort();
-    connChip.textContent = "Board connected";
-    connChip.classList.add("connected");
-    uploadBtn.disabled = !compiledHexBytes;
-    log("Board selected. Ready to upload once compiled.", "ok");
-  } catch (err) {
-    log("No board was selected.", "warn");
-  }
-});
-
-// ---------- STK500v1 upload ----------
-const STK = {
-  GET_SYNC: 0x30,
-  OK: 0x10,
-  INSYNC: 0x14,
-  CRC_EOP: 0x20,
-  ENTER_PROGMODE: 0x50,
-  LEAVE_PROGMODE: 0x51,
-  LOAD_ADDRESS: 0x55,
-  PROG_PAGE: 0x64,
-  READ_SIGN: 0x75,
+// ---------- Upload, via the proven arduino-web-uploader library ----------
+// Maps our own board dropdown values to that library's board names.
+const LIBRARY_BOARD_NAMES = {
+  uno: "uno",
+  nano_new: "nano",
+  nano_old: "nanoOldBootloader",
 };
-const PAGE_SIZE = 128; // bytes, correct for ATmega328P (Uno / Nano)
 
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+const realUploaderBtn = document.getElementById("realUploaderBtn");
+const progressSpan = realUploaderBtn.querySelector(".upload-progress");
 
-class SerialReader {
-  constructor(port) {
-    this.reader = port.readable.getReader();
-    this.buffer = new Uint8Array(0);
-    this.closed = false;
-    this.pumpError = null;
-    this._pump();
+// Mirror the library's own progress text into our console, so the
+// person watches one place instead of two.
+let lastProgressText = "";
+new MutationObserver(() => {
+  const text = progressSpan.textContent.trim();
+  if (text && text !== lastProgressText) {
+    lastProgressText = text;
+    log("  " + text, "muted");
   }
-  // Runs continuously in the background, collecting every byte that
-  // arrives into one buffer. readBytes() below just polls that buffer —
-  // it never calls reader.read() itself, which avoids a subtle bug where
-  // an old, timed-out read could still resolve later and scramble the
-  // order of bytes relative to what we're currently trying to match up.
-  async _pump() {
-    try {
-      while (true) {
-        const { value, done } = await this.reader.read();
-        if (done) { this.closed = true; break; }
-        if (value && value.length) {
-          const merged = new Uint8Array(this.buffer.length + value.length);
-          merged.set(this.buffer);
-          merged.set(value, this.buffer.length);
-          this.buffer = merged;
-        }
-      }
-    } catch (err) {
-      this.pumpError = err;
-    }
-  }
-    async readBytes(n, timeoutMs = 1500) {
-    const deadline = Date.now() + timeoutMs;
-    while (this.buffer.length < n) {
-      if (this.pumpError) throw this.pumpError;
-      if (this.closed) throw new Error("Serial port closed unexpectedly.");
-      if (Date.now() >= deadline) {
-        const partial = this.buffer.length
-          ? ` (${this.buffer.length} byte(s) sitting in the buffer: ${toHex(this.buffer)})`
-          : " (0 bytes received — total silence)";
-        throw new Error("Timed out waiting for a response from the board." + partial);
-      }
-      await sleep(15);
-    }
-    const out = this.buffer.slice(0, n);
-    this.buffer = this.buffer.slice(n);
-    return out;
-  }
-  async release() {
-    try { await this.reader.cancel(); } catch (e) {}
-    try { this.reader.releaseLock(); } catch (e) {}
-  }
-}
+}).observe(progressSpan, { childList: true, characterData: true, subtree: true });
 
-async function writeBytes(writer, bytes) {
-  await writer.write(new Uint8Array(bytes));
-}
+uploadBtn.addEventListener("click", () => {
+  if (!compiledHexText) return;
 
-async function expectInSyncOk(reader, stepName) {
-  const resp = await reader.readBytes(2);
-  if (resp[0] !== STK.INSYNC || resp[1] !== STK.OK) {
-    throw new Error(`Board didn't acknowledge "${stepName}" (got bytes ${resp[0]}, ${resp[1]}).`);
-  }
-}
+  const boardName = LIBRARY_BOARD_NAMES[boardSelect.value];
+  const blob = new Blob([compiledHexText], { type: "text/plain" });
+  const hexUrl = URL.createObjectURL(blob);
 
-async function resetIntoBootloader(port) {
-  // Pulses DTR (only) to trigger the auto-reset circuit most Uno/Nano
-  // boards have (a capacitor between the USB chip's DTR line and the
-  // reset pin). Some clone boards' reset circuitry gets confused if RTS
-  // is toggled at the same time, so we leave RTS alone here.
-  await port.setSignals({ dataTerminalReady: false });
-  await sleep(250);
-  await port.setSignals({ dataTerminalReady: true });
-  await sleep(150);
-}
+  realUploaderBtn.setAttribute("hex-href", hexUrl);
+  realUploaderBtn.setAttribute("board", boardName);
 
-function toHex(bytes) {
-  return Array.from(bytes).map((b) => "0x" + b.toString(16).padStart(2, "0")).join(" ");
-}
-
-async function syncWithBootloader(writer, reader) {
-  let lastErr = null;
-  for (let attempt = 0; attempt < 40; attempt++) {
-    try {
-      await writeBytes(writer, [STK.GET_SYNC, STK.CRC_EOP]);
-      const resp = await reader.readBytes(2, 250);
-      if (resp[0] === STK.INSYNC && resp[1] === STK.OK) return;
-      log(`  attempt ${attempt + 1}: got ${toHex(resp)} (expected 0x14 0x10)`, "muted");
-      lastErr = new Error(`Unexpected sync response (${resp[0]}, ${resp[1]})`);
-    } catch (err) {
-      log(`  attempt ${attempt + 1}: ${err.message}`, "muted");
-      lastErr = err;
-      reader.buffer = new Uint8Array(0); // drop any partial garbage and retry
-    }
-  }
-  throw new Error(
-    "Couldn't sync with the bootloader. Try pressing the board's reset button right after clicking Upload, or double-check the board type selected."
-  );
-}
-
-uploadBtn.addEventListener("click", async () => {
-  if (!serialPort || !compiledHexBytes) return;
+  log("Handing off to the board-selection popup — choose your board there...", "muted");
   uploadBtn.disabled = true;
-  compileBtn.disabled = true;
-  connectBtn.disabled = true;
+  realUploaderBtn.click();
 
-  let writer, reader;
-  try {
-    const baud = BOARD_BAUD[boardSelect.value];
-    log(`Opening serial port at ${baud} baud...`, "muted");
-    await serialPort.open({ baudRate: baud });
-
-    writer = serialPort.writable.getWriter();
-    reader = new SerialReader(serialPort);
-
-    log("Resetting board into bootloader...", "muted");
-    await resetIntoBootloader(serialPort);
-
-    log("Syncing...", "muted");
-    await syncWithBootloader(writer, reader);
-    log("Synced.", "ok");
-
-    await writeBytes(writer, [STK.ENTER_PROGMODE, STK.CRC_EOP]);
-    await expectInSyncOk(reader, "enter program mode");
-
-    const total = compiledHexBytes.length;
-    const pageCount = Math.ceil(total / PAGE_SIZE);
-    log(`Writing ${pageCount} page(s) of flash memory...`, "muted");
-
-    for (let page = 0; page < pageCount; page++) {
-      const byteAddr = page * PAGE_SIZE;
-      const wordAddr = byteAddr / 2;
-
-      await writeBytes(writer, [STK.LOAD_ADDRESS, wordAddr & 0xff, (wordAddr >> 8) & 0xff, STK.CRC_EOP]);
-      await expectInSyncOk(reader, `load address (page ${page + 1})`);
-
-      let pageBytes = compiledHexBytes.slice(byteAddr, byteAddr + PAGE_SIZE);
-      if (pageBytes.length < PAGE_SIZE) {
-        const padded = new Uint8Array(PAGE_SIZE).fill(0xff);
-        padded.set(pageBytes);
-        pageBytes = padded;
-      }
-
-      const cmd = [STK.PROG_PAGE, (PAGE_SIZE >> 8) & 0xff, PAGE_SIZE & 0xff, "F".charCodeAt(0), ...pageBytes, STK.CRC_EOP];
-      await writeBytes(writer, cmd);
-      await expectInSyncOk(reader, `program page ${page + 1}`);
-
-      if (page % 4 === 0 || page === pageCount - 1) {
-        log(`  page ${page + 1} / ${pageCount}`, "muted");
-      }
-    }
-
-    await writeBytes(writer, [STK.LEAVE_PROGMODE, STK.CRC_EOP]);
-    await expectInSyncOk(reader, "leave program mode");
-
-    log("Upload complete. The board should be running your new sketch now.", "ok");
-  } catch (err) {
-    log("Upload failed: " + err.message, "err");
-  } finally {
-    try { if (reader) await reader.release(); } catch (e) {}
-    try { if (writer) writer.releaseLock(); } catch (e) {}
-    try { await serialPort.close(); } catch (e) {}
-    uploadBtn.disabled = !compiledHexBytes;
-    compileBtn.disabled = false;
-    connectBtn.disabled = false;
-  }
+  // The library doesn't give us a promise to await, so we just re-enable
+  // the button after a generous delay — clicking again if still mid-upload
+  // simply reopens the picker, it doesn't corrupt anything in progress.
+  setTimeout(() => {
+    uploadBtn.disabled = !compiledHexText;
+  }, 4000);
 });
 </script>
 </body>
