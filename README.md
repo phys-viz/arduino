@@ -1,4 +1,4 @@
-# Sketchbench — a classroom Arduino uploader
+# Zio Arduino — a classroom Arduino uploader
 
 Replaces Arduino Create's browser editor for a classroom of Uno/Nano boards.
 Students write code, click **Compile**, click **Connect board**, click
