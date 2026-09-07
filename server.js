@@ -31,6 +31,13 @@ app.use(express.json({ limit: "2mb" }));
 
 const PORT = process.env.PORT || 3131;
 
+// The compiler binary's location — configurable via an environment
+// variable so the exact same server.js works unchanged both on your own
+// Windows machine (falls back to the path you already have working) and
+// inside the Docker container this gets deployed in (which sets this
+// environment variable itself, pointing at its own Linux install).
+const ARDUINO_CLI = process.env.ARDUINO_CLI_PATH || "C:\\Users\\antho\\Downloads\\arduino-cli\\arduino-cli.exe";
+
 // Board nicknames the frontend can request, mapped to arduino-cli FQBNs.
 // Add more here if you use other boards.
 const BOARD_FQBNS = {
@@ -41,7 +48,7 @@ const BOARD_FQBNS = {
 
 // Simple concurrency limiter so 60 students hitting "Compile" at the same
 // moment doesn't try to spawn 60 compilers at once.
-const MAX_CONCURRENT_COMPILES = 4;
+const MAX_CONCURRENT_COMPILES = 8;
 let active = 0;
 const queue = [];
 
@@ -98,20 +105,38 @@ app.post("/compile", async (req, res) => {
 
     const result = await runWithLimit(() =>
       execFilePromise(
-        "arduino-cli",
+        ARDUINO_CLI,
         ["compile", "--fqbn", fqbn, workDir, "--output-dir", outDir],
         { timeout: 25000, maxBuffer: 10 * 1024 * 1024 }
       )
     );
 
     if (result.error) {
-      // Compiler errors land in stdout for arduino-cli; surface both.
-      const message = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
-      return res.json({
-        success: false,
-        error: message || "Compilation failed (no details returned).",
-      });
-    }
+  console.error("Compile process error:", result.error.code, "-", result.error.message);
+  // Compiler errors land in stdout for arduino-cli; surface both.
+  const message = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+
+  // A missing library produces a fairly cryptic GCC error. Translate
+  // the common case into something a student can actually act on,
+  // while still including the raw error underneath for you or a
+  // curious student to see exactly what happened.
+  const missingHeader = message.match(/fatal error:\s*([\w./-]+\.h):\s*No such file or directory/);
+  if (missingHeader) {
+    const libName = missingHeader[1].replace(/\.h$/, "");
+    return res.json({
+      success: false,
+      error:
+        `This sketch needs a library called "${libName}" that isn't installed on the server yet. ` +
+        `Ask your teacher to install it (arduino-cli lib install "${libName}").\n\n` +
+        `Details:\n${message}`,
+    });
+  }
+
+  return res.json({
+    success: false,
+    error: message || "Compilation failed (no details returned).",
+  });
+}
 
     const hexPath = path.join(outDir, `${sketchName}.ino.hex`);
     const hexBuffer = await fs.readFile(hexPath);
