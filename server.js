@@ -19,6 +19,7 @@
 
 const express = require("express");
 const cors = require("cors");
+const rateLimit = require("express-rate-limit");
 const { v4: uuidv4 } = require("uuid");
 const { execFile } = require("child_process");
 const fs = require("fs/promises");
@@ -26,8 +27,34 @@ const path = require("path");
 const os = require("os");
 
 const app = express();
+
+// Render (like most hosts) puts your app behind its own proxy, so the raw
+// connection Express sees is always Render's proxy, not the actual visitor
+// — every single request would otherwise look like it's coming from the
+// same place. This tells Express to trust the "who actually sent this"
+// header Render adds, which the rate limiter below depends on to tell
+// different students (or a bot) apart correctly.
+app.set("trust proxy", 1);
+
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
+
+// Caps how many /compile requests one network address can make per
+// minute. Set generously — high enough that your whole class compiling
+// in the same burst (a school WiFi often shares one public address, so
+// this can mean your ENTIRE class, not just one student) sails through
+// without issue, while still being a small fraction of what an actual
+// spam attempt would try.
+const compileLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: "Too many compile requests from your network in the last minute. Wait a moment and try again.",
+  },
+});
 
 const PORT = process.env.PORT || 3131;
 
@@ -78,7 +105,7 @@ function execFilePromise(cmd, args, opts) {
   });
 }
 
-app.post("/compile", async (req, res) => {
+app.post("/compile", compileLimiter, async (req, res) => {
   const { code, board } = req.body || {};
 
   if (typeof code !== "string" || !code.trim()) {
